@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { ApiContentBlock, EngineInterface, Register } from 'claude-code'
 import type { Segment } from './controls'
 
 const modelId = atom({ plugin: 'hud-controls', key: 'modelId' } as const, '')
@@ -219,6 +219,89 @@ async function isWanted($: EngineInterface, args: string) {
   return (await read($, pendingEffort)) === args
 }
 
+// An /effort the row runs resolves without its output; the engine records that
+// output after it as the command's transcript rows, from the same origin.
+// What the run asked for shows once it runs, and its output corrects that.
+type Run = { args: string; origin: string; was: { effort: string; ultracode: boolean }; isRead: boolean }
+// Runs whose output rows have not come yet, oldest first.
+const unread: Run[] = []
+// Output rows that came before their run resolved.
+const early: { args: string; origin: string; text: string }[] = []
+// The /effort args each origin's last command row named, until its output.
+const named = new Map<string, string>()
+// Enough for every run one turn can queue; older entries are dropped.
+const KEEP = 8
+
+function originKey(origin: object) {
+  const { kind, name } = origin as { kind?: unknown; name?: unknown }
+  return `${String(kind)}:${typeof name === 'string' ? name : ''}`
+}
+
+function keep<T>(list: T[], one: T) {
+  list.push(one)
+  if (list.length > KEEP) list.shift()
+}
+
+async function showAsked($: EngineInterface, args: string) {
+  const asked = args.trim().toLowerCase()
+  if (asked === 'ultracode on') await update($, ultracode, () => true)
+  else if (asked === 'ultracode off') await update($, ultracode, () => false)
+  else if (asked === 'auto') await update($, effort, () => '')
+  else if (LEVELS.includes(asked)) await update($, effort, () => asked)
+}
+
+async function readReply($: EngineInterface, run: Run, text: string) {
+  if (run.isRead) return
+  // A refusal changed nothing: the level or switch goes back to what it was.
+  if (/^Failed to set effort level|needs dynamic workflows/i.test(text)) {
+    if (/^ultracode /i.test(run.args)) await update($, ultracode, () => run.was.ultracode)
+    else await update($, effort, () => run.was.effort)
+  }
+  await applyEffortReply($, text)
+}
+
+// After the run: its output now, from rows that came early, or later from its rows.
+async function settleRun($: EngineInterface, run: Run, text?: string) {
+  const at = early.findIndex(one => one.args === run.args && one.origin === run.origin)
+  const rows = at === -1 ? undefined : early.splice(at, 1)[0]
+  if (text !== undefined) {
+    // Read already: its rows, early or later, are not read again.
+    if (rows === undefined) keep(unread, { ...run, isRead: true })
+    return
+  }
+  await showAsked($, run.args)
+  if (rows !== undefined) await readReply($, run, rows.text)
+  else keep(unread, run)
+}
+
+// The command's rows: its name and args, then what it printed.
+async function readCommandRow($: EngineInterface, origin: object, content: readonly ApiContentBlock[]) {
+  const key = originKey(origin)
+  const text = content.map(one => (one.type === 'text' ? one.text : '')).join('')
+  const name = /<command-name>\/?([^<]*)<\/command-name>/.exec(text)?.[1]
+  if (name !== undefined) {
+    if (name === 'effort') {
+      named.set(key, (/<command-args>([^<]*)<\/command-args>/.exec(text)?.[1] ?? '').trim())
+    } else named.delete(key)
+    return
+  }
+  if (/<local-command-stderr>/.test(text)) {
+    named.delete(key)
+    return
+  }
+  const printed = /<local-command-stdout>([\s\S]*)<\/local-command-stdout>/.exec(text)?.[1]
+  const args = named.get(key)
+  if (printed === undefined || args === undefined) return
+  named.delete(key)
+  const at = unread.findIndex(one => one.args === args && one.origin === key)
+  if (at === -1) {
+    keep(early, { args, origin: key, text: printed })
+    return
+  }
+  const [run] = unread.splice(at, 1)
+  if (run) await readReply($, run, printed)
+}
+
 // What a press on the controls row runs, by the key of the run pressed.
 // A press made while a turn runs queues its command until the turn ends.
 function actionFor($: EngineInterface, key: string, isWorking: boolean) {
@@ -294,11 +377,31 @@ export const register: Register = on => {
       await update($, pendingEffort, () => '')
       await sharePending($)
     }
+    const run: Run = {
+      args: e.args.trim(),
+      origin: originKey(e.origin),
+      was: { effort: await read($, effort), ultracode: await read($, ultracode) },
+      isRead: false,
+    }
     const done = await next(e)
     // Past next, a throw would reach the catch below and run the command again.
     try {
-      await applyEffortReply($, done.text)
+      if (done.text !== undefined) await applyEffortReply($, done.text)
+      await settleRun($, run, done.text)
+      // It ran: no longer waiting, and a press now starts a new command.
       if (isRow) await clearPending($, e.args)
+    } catch (error) {
+      $.ui.log(`hud-controls: effort reply not read: ${String(error)}`)
+    }
+
+    return done
+  }).catch(($, e, next) => next(e))
+
+  on('session.append', { door: 'command' }, async ($, e, next) => {
+    const done = await next(e)
+    if (e.agentId !== undefined) return done
+    try {
+      await readCommandRow($, e.origin, e.message.content)
     } catch (error) {
       $.ui.log(`hud-controls: effort reply not read: ${String(error)}`)
     }

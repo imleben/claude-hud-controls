@@ -418,6 +418,147 @@ test('an /effort typed at the prompt replaces a waiting press', { plugins: [QUEU
   expect(row.effortArgs).toEqual(['xhigh', 'auto', 'ultracode off'])
 })
 
+// The engine answers the row's own /effort without its output and records
+// that output as the command's transcript rows, from the row's origin.
+const ROW = { kind: 'plugin', name: 'hud-controls' } as const
+type RowOrigin = typeof ROW | { kind: 'composer' }
+
+async function silent($: Engine, on: On) {
+  const state = { workflowsOn: true, hold: undefined as Promise<void> | undefined }
+  const toasts: string[] = []
+  const effortArgs: string[] = []
+  mock.clock(on, { now: 1_000_000 })
+  share(on)
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('settings.read', () => ({ value: { model: 'opus' } }))
+  on('ui.toast', ($, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('config.list', () => ({
+    value: [
+      {
+        key: 'workflows',
+        label: 'Dynamic workflows',
+        kind: 'toggle',
+        value: state.workflowsOn,
+        provider: { plugin: 'engine', tier: 'core' },
+        isLocked: false,
+      } as never,
+    ],
+  }))
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('command.run', { command: 'effort' }, async ($, e) => {
+    effortArgs.push(e.args)
+    await state.hold
+    return {}
+  })
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: 'hud-controls', surface: 'terminal', component: 'PromptHint', props: PROPS })
+  await ui.resize({ columns: 200, rows: 1, in: 'controls' })
+  const row = async () => (await ui.find({ in: 'controls', key: 'row:0' }))?.text ?? ''
+  const look = async (label: string) =>
+    (await ui.find({ in: 'controls', type: 'Text', text: new RegExp(`^${label}$`) }))?.props
+  const click = async (label: string) =>
+    ui.pointer({ type: 'down', x: (await row()).indexOf(label), y: 0, button: 'left', in: 'controls' })
+  let id = 0
+  const append = (text: string, origin: RowOrigin) =>
+    $.session.append({
+      message: { type: 'user', role: 'user', content: [{ type: 'text', text }] },
+      door: 'command',
+      origin,
+      uuid: `row-${id++}`,
+    })
+  const header = (args: string, origin: RowOrigin = ROW) =>
+    append(
+      `<command-name>/effort</command-name>\n<command-message>effort</command-message>\n<command-args>${args}</command-args>`,
+      origin,
+    )
+  const stdout = (printed: string, origin: RowOrigin = ROW) =>
+    append(`<local-command-stdout>${printed}</local-command-stdout>`, origin)
+  const rows = async (args: string, printed: string) => {
+    await header(args)
+    await stdout(printed)
+  }
+  const isPlain = async (label: string) => (await look(label))?.underline !== true
+  return { ui, state, toasts, effortArgs, look, click, header, stdout, rows, isPlain }
+}
+
+const ON = 'Ultracode on (this session only): dynamic workflows on every task. Effort stays medium.'
+const OFF_REPLY = 'Ultracode off. Effort stays medium.'
+const ORANGE = '#f5a46c'
+const GRAY = '#7a7a7a'
+
+test('a press shows what it asked once it runs, and its rows confirm it', async ($, on) => {
+  const row = await silent($, on)
+  await row.click('uc')
+  expect(row.effortArgs).toEqual(['ultracode on'])
+  expect(await row.look('uc')).toMatchObject({ color: ORANGE, weight: 'bold' })
+  expect(await row.isPlain('uc')).toBe(true)
+  await row.rows('ultracode on', ON)
+  expect(await row.look('uc')).toMatchObject({ color: ORANGE, weight: 'bold' })
+
+  // A press after the run starts a new command, even before the first one's rows.
+  await row.click('uc')
+  expect(row.effortArgs).toEqual(['ultracode on', 'ultracode off'])
+  expect(await row.look('uc')).toMatchObject({ color: GRAY })
+})
+
+test('each run reads its own rows when several run before them', async ($, on) => {
+  const row = await silent($, on)
+  await row.click('uc')
+  await row.click('Opus')
+  await row.click('lw')
+  expect(row.effortArgs).toEqual(['ultracode on', 'low'])
+  await row.rows('ultracode on', ON)
+  await row.rows('low', 'Set effort level to low (this session only)')
+  expect(await row.look('uc')).toMatchObject({ color: ORANGE, weight: 'bold' })
+  expect(await row.look('lw')).toMatchObject({ weight: 'bold' })
+  expect(await row.isPlain('uc')).toBe(true)
+  expect(await row.isPlain('lw')).toBe(true)
+  // The first run's reply, a refusal, still reaches it after the second ran.
+  row.state.workflowsOn = false
+  await row.click('uc')
+  await row.click('lw')
+  await row.rows('ultracode off', 'Failed to set effort level: busy')
+  await row.rows('low', 'Set effort level to low (this session only)')
+  expect(await row.look('uc')).toMatchObject({ color: ORANGE, weight: 'bold' })
+})
+
+test('rows that come during the run count once it ends', async ($, on) => {
+  const row = await silent($, on)
+  let release: () => void = () => undefined
+  row.state.hold = new Promise(resolve => {
+    release = resolve
+  })
+  const pressing = row.click('uc')
+  for (let tries = 0; tries < 50 && row.effortArgs.length < 1; tries++) await row.ui.advance(10)
+  await row.rows('ultracode on', 'Ultracode needs dynamic workflows enabled (see /config).')
+  release()
+  await pressing
+  expect(await row.look('uc')).toMatchObject({ color: GRAY })
+  expect(await row.isPlain('uc')).toBe(true)
+  expect(row.toasts).toContain('Ultracode needs Workflow turned on')
+})
+
+test('another origin\'s output is not a run\'s reply', async ($, on) => {
+  const row = await silent($, on)
+  await row.click('uc')
+  await row.header('ultracode on')
+  await row.stdout('Unrelated output', { kind: 'composer' })
+  await row.stdout('Ultracode needs dynamic workflows enabled (see /config).')
+  expect(await row.look('uc')).toMatchObject({ color: GRAY })
+  expect(row.toasts).toContain('Ultracode needs Workflow turned on')
+
+  // An effort press reads a kept level the same way.
+  await row.click('Opus')
+  await row.click('mx')
+  expect(await row.look('mx')).toMatchObject({ weight: 'bold' })
+  await row.rows('max', 'Kept effort level as low')
+  expect(await row.look('lw')).toMatchObject({ weight: 'bold' })
+  expect(await row.isPlain('mx')).toBe(true)
+})
+
 test('a press runs once even when the HUD file cannot be written', async ($, on) => {
   const row = await open($, on, { isFull: true })
   await row.click('lw')
