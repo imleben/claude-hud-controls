@@ -1,4 +1,5 @@
 # claude-hud-controls
+[English](README.md) · [한국어](README.ko.md) · [简体中文](README.zh-CN.md)
 
 Clickable model, effort, workflow and ultracode switches under the Claude
 Code prompt, and a statusline HUD that agrees with them. When you pick an
