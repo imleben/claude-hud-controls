@@ -1,6 +1,6 @@
 # claude-hud-controls
 
-[English](README.md) · [한국어](README.ko.md) · [简体中文](README.zh-CN.md)
+[English](README.md) · [한국어](README.ko.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md)
 
 在 Claude Code 提示符下方提供可点击的模型、思考强度、工作流和 ultracode 控件，
 并配有与这些控件同步的状态栏 HUD。选择思考强度后，两处都会立即显示新设置。

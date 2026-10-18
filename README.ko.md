@@ -1,5 +1,5 @@
 # claude-hud-controls
-[English](README.md) · [한국어](README.ko.md) · [简体中文](README.zh-CN.md)
+[English](README.md) · [한국어](README.ko.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md)
 
 Claude Code 프롬프트 아래에서 모델, 추론 강도, 워크플로, ultracode를 클릭으로
 전환하고, 상태 표시줄 HUD에서도 같은 설정을 확인할 수 있습니다. 추론 강도를
