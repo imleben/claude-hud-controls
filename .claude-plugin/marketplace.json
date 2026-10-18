@@ -1,0 +1,13 @@
+{
+  "name": "claude-hud-controls",
+  "description": "Clickable Claude Code controls under the prompt, with a statusline HUD that shows a picked effort level at once",
+  "owner": {
+    "name": "imleben"
+  },
+  "plugins": [
+    {
+      "name": "hud-controls",
+      "source": "./"
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "display": {
+    "showTools": true,
+    "showAgents": true,
+    "showTodos": true,
+    "showDuration": true,
+    "showConfigCounts": true,
+    "showSessionName": true,
+    "showEffortLevel": true,
+    "sevenDayThreshold": 0,
+    "showResetLabel": false,
+    "contextValue": "remaining",
+    "usageValue": "remaining"
+  }
+}
