@@ -4,12 +4,14 @@ Clickable model, effort, workflow and ultracode switches under the Claude
 Code prompt, and a statusline HUD that agrees with them. When you pick an
 effort level, both show it right away.
 
-```
-Opus 5.5 ◑ high │ my-project                           statusline (hud/)
-ctx ███████░░░ 74%
+![The statusline above, the controls row at the bottom](docs/screenshot.png)
 
-Fable Opus Sonnet Haiku │ lw md hg xh mx │ wf │ uc      controls row (the mod)
-```
+The top lines are the statusline (`hud/`): the model and effort (`Opus 5.5
+◔ med`), the project and git branch, then context, 5-hour and 7-day usage as
+what remains, colored by how much is used. The bottom line is the controls
+row (the mod), beside Claude Code's mode label. Opus is running, its effort
+choices are open with `md` chosen, workflows (`wf`) are on and ultracode
+(`uc`) is off.
 
 The repository holds two parts:
 
