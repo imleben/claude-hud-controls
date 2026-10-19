@@ -96,15 +96,22 @@ clicked too.
 
 This is claude-hud 0.8.0 with these changes:
 
-- **Color shows how much is used.** Context, 5-hour and 7-day usage use one
-  color scale for both the number and the bar: dark green when little is
-  used, through yellow, to red when full. It gets brighter as use grows, so
-  an idle bar stays dim and a full one stands out. This scale replaces
-  claude-hud's fixed thresholds and the color overrides for these bars.
+- **Flat bars.** Every bar is one row of background color instead of block
+  characters.
+- **Color shows how much is used.** The context number and bar use one color
+  scale: dark green when little is used, through yellow, to red when full.
+  It gets brighter as use grows, so an idle bar stays dim and a full one
+  stands out. This scale replaces claude-hud's fixed thresholds and the color
+  overrides for these bars.
+- **Usage colored by pace.** The 5-hour and 7-day bars mark the share of the
+  window's time still left with a thin `│`. Their bar and number stay green
+  while the quota left keeps up with the time left, take one step toward red
+  for every 5 points short (5, 10, 15, 20), and turn red from 25 points short.
+  Without a reset time they use the scale above.
 - **Bars show what remains.** With `contextValue` or `usageValue` set to
   `"remaining"` (as in `hud/config.json`), the bar fills by what is left,
   matching the number beside it. A bar with anything left shows at least one
-  block.
+  cell.
 - **Short labels.** `Context`, `Usage` and `Weekly` become `ctx`, `5h` and
   `7d`. `medium` shows as `med`, and the model name has no brackets.
 - **A steadier usage line.** Reset times on the usage line have no

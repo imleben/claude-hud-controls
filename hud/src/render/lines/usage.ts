@@ -2,7 +2,7 @@ import type { RenderContext } from "../../types.js";
 import { isLimitReached } from "../../types.js";
 import type { MessageKey } from "../../i18n/types.js";
 import { shouldHideUsage } from "../../stdin.js";
-import { critical, label, getQuotaColor, quotaBar, RESET } from "../colors.js";
+import { critical, label, getQuotaColor, quotaBar, windowTimeLeft, RESET } from "../colors.js";
 import { getAdaptiveBarWidth } from "../../utils/terminal.js";
 import { t } from "../../i18n/index.js";
 import {
@@ -215,7 +215,7 @@ function formatCompactWindowPart(
   usageValueMode: UsageValueMode = 'percent',
   wallClockOpts?: WallClockOptions,
 ): string {
-  const usageDisplay = formatUsagePercent(percent, colors, usageValueMode);
+  const usageDisplay = formatUsagePercent(percent, colors, usageValueMode, windowTimeLeft(resetAt, windowMs));
   const reset = formatWindowTime(resetAt, windowMs, timeFormat, wallClockOpts);
   const styledLabel = label(`${windowLabel}:`, colors);
   return reset
@@ -227,11 +227,12 @@ function formatUsagePercent(
   percent: number | null,
   colors?: RenderContext["config"]["colors"],
   mode: UsageValueMode = 'percent',
+  timeLeft: number | null = null,
 ): string {
   if (percent === null) {
     return label("--", colors);
   }
-  const color = getQuotaColor(percent, colors);
+  const color = getQuotaColor(percent, colors, timeLeft);
   const displayPercent = mode === 'remaining' ? Math.max(0, 100 - percent) : percent;
   return `${color}${displayPercent}%${RESET}`;
 }
@@ -267,7 +268,8 @@ function formatUsageWindowPart({
   usageValueMode?: UsageValueMode;
   wallClockOpts?: WallClockOptions;
 }): string {
-  const usageDisplay = formatUsagePercent(percent, colors, usageValueMode);
+  const timeLeft = percent === null ? null : windowTimeLeft(resetAt, windowMs);
+  const usageDisplay = formatUsagePercent(percent, colors, usageValueMode, timeLeft);
   const reset = formatWindowTime(resetAt, windowMs, timeFormat, wallClockOpts);
   const styledLabel = labelKey
     ? progressLabel(labelKey, colors, labelOptions)
@@ -282,9 +284,8 @@ function formatUsageWindowPart({
     : "";
 
   if (usageBarEnabled) {
-    const body = resetSuffix
-      ? `${quotaBar(percent ?? 0, barWidth, colors, usageValueMode === 'remaining' && percent !== null)} ${usageDisplay} ${resetSuffix}`
-      : `${quotaBar(percent ?? 0, barWidth, colors, usageValueMode === 'remaining' && percent !== null)} ${usageDisplay}`;
+    const bar = quotaBar(percent ?? 0, barWidth, colors, usageValueMode === 'remaining' && percent !== null, timeLeft);
+    const body = resetSuffix ? `${bar} ${usageDisplay} ${resetSuffix}` : `${bar} ${usageDisplay}`;
     return forceLabel ? `${styledLabel} ${body}` : body;
   }
 

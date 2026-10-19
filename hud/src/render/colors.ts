@@ -3,6 +3,8 @@ import type { HudColorName, HudColorValue, HudColorOverrides } from '../config.j
 export const RESET = '\x1b[0m';
 
 const DIM = '\x1b[2m';
+const BAR_EMPTY_BG = '\x1b[48;5;237m';
+const PACE_MARK = '\x1b[97m';
 const RED = '\x1b[31m';
 const GREEN = '\x1b[32m';
 const YELLOW = '\x1b[33m';
@@ -142,26 +144,56 @@ export function getContextColor(
   return gradientColor(percent);
 }
 
-export function getQuotaColor(percent: number, _colors?: Partial<HudColorOverrides>): string {
-  return gradientColor(percent);
+// Local patch: the share of the window's time still left, 0-100, or null
+// when the reset time is unknown.
+export function windowTimeLeft(resetAt: Date | null, windowMs: number): number | null {
+  if (!resetAt) {
+    return null;
+  }
+  const left = ((resetAt.getTime() - Date.now()) / windowMs) * 100;
+  return Number.isFinite(left) ? Math.max(0, Math.min(100, left)) : null;
 }
 
-// Local patch: remaining=true fills the bar by what is left (100 - percent);
-// the whole fill takes the same use-level color as the number beside it.
+// Local patch: with the share of the window's time still left, color by pace:
+// green while quota left keeps up with time left, then one step per 5 points
+// short (5, 10, 15, 20), red from 25 short.
+export function getQuotaColor(
+  percent: number,
+  _colors?: Partial<HudColorOverrides>,
+  timeLeft: number | null = null,
+): string {
+  if (timeLeft === null || !Number.isFinite(timeLeft) || !Number.isFinite(percent)) {
+    return gradientColor(percent);
+  }
+  const short = timeLeft - (100 - percent);
+  const step = Math.min(5, Math.max(0, Math.floor(short / 5)));
+  return gradientColor(step * 20);
+}
+
+// Local patch: the bar is one row of background color, no block glyphs.
+// remaining=true fills it by what is left (100 - percent); the fill takes the
+// same color as the number beside it. With timeLeft, a thin │ stands where the
+// fill would end on pace (time left, or time gone when the bar shows use).
 function gradientBar(
   percent: number,
   width: number,
   colors: Partial<HudColorOverrides> | undefined,
   remaining: boolean,
+  timeLeft: number | null,
 ): string {
   const safeWidth = Number.isFinite(width) ? Math.max(0, Math.round(width)) : 0;
   const safePercent = Number.isFinite(percent) ? Math.min(100, Math.max(0, percent)) : 0;
   const level = remaining ? 100 - safePercent : safePercent;
   const filled = level > 0 && safeWidth > 0 ? Math.max(1, Math.round((level / 100) * safeWidth)) : 0;
-  const empty = safeWidth - filled;
-  const filledChar = colors?.barFilled ?? '█';
-  const emptyChar = colors?.barEmpty ?? '░';
-  return `${gradientColor(safePercent)}${filledChar.repeat(filled)}${DIM}${emptyChar.repeat(empty)}${RESET}`;
+  const fill = getQuotaColor(safePercent, colors, timeLeft).replace('[38;', '[48;');
+  let at = -1;
+  if (timeLeft !== null && Number.isFinite(timeLeft) && safeWidth > 0) {
+    const pace = Math.min(100, Math.max(0, remaining ? timeLeft : 100 - timeLeft));
+    at = Math.min(safeWidth - 1, Math.round((pace / 100) * safeWidth));
+  }
+  const cells = Array.from({ length: safeWidth }, (_, i) =>
+    `${i < filled ? fill : BAR_EMPTY_BG}${i === at ? `${PACE_MARK}│` : ' '}${RESET}`);
+  return cells.join('');
 }
 
 export function quotaBar(
@@ -169,8 +201,9 @@ export function quotaBar(
   width: number = 10,
   colors?: Partial<HudColorOverrides>,
   remaining: boolean = false,
+  timeLeft: number | null = null,
 ): string {
-  return gradientBar(percent, width, colors, remaining);
+  return gradientBar(percent, width, colors, remaining, timeLeft);
 }
 
 export function coloredBar(
@@ -180,5 +213,5 @@ export function coloredBar(
   _thresholds?: ContextThresholds,
   remaining: boolean = false,
 ): string {
-  return gradientBar(percent, width, colors, remaining);
+  return gradientBar(percent, width, colors, remaining, null);
 }

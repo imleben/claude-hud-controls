@@ -2,7 +2,7 @@ import type { RenderContext } from '../types.js';
 import { isLimitReached } from '../types.js';
 import { getContextPercent, getBufferedPercent, getModelName, formatModelName, resolveModelName, shouldHideUsage } from '../stdin.js';
 import { getOutputSpeed } from '../speed-tracker.js';
-import { coloredBar, critical, git as gitColor, gitBranch as gitBranchColor, label, model as modelColor, project as projectColor, getContextColor, getQuotaColor, quotaBar, custom as customColor, RESET } from './colors.js';
+import { coloredBar, critical, git as gitColor, gitBranch as gitBranchColor, label, model as modelColor, project as projectColor, getContextColor, getQuotaColor, quotaBar, windowTimeLeft, custom as customColor, RESET } from './colors.js';
 import { getAdaptiveBarWidth } from '../utils/terminal.js';
 import { renderCostEstimate } from './lines/cost.js';
 import { renderPromptCacheLine } from './lines/prompt-cache.js';
@@ -29,6 +29,9 @@ const debug = createDebug('session-line');
  * Renders the full session line (model + context bar + project + git + counts + usage + duration).
  * Used for compact layout mode.
  */
+const FIVE_HOUR_WINDOW_MS = 5 * 60 * 60 * 1000;
+const SEVEN_DAY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
 export function renderSessionLine(ctx: RenderContext): string {
   const model = formatModelName(resolveModelName(ctx.stdin, ctx.transcript, ctx.config?.display?.modelSource), ctx.config?.display?.modelFormat, ctx.config?.display?.modelOverride);
 
@@ -194,6 +197,7 @@ export function renderSessionLine(ctx: RenderContext): string {
             window.label,
             window.percent,
             window.resetAt,
+            SEVEN_DAY_WINDOW_MS,
             timeFormat,
             colors,
             usageValueMode,
@@ -203,6 +207,7 @@ export function renderSessionLine(ctx: RenderContext): string {
             label: window.label,
             percent: window.percent,
             resetAt: window.resetAt,
+            windowMs: SEVEN_DAY_WINDOW_MS,
             colors,
             usageBarEnabled: display?.usageBarEnabled ?? true,
             barWidth,
@@ -244,11 +249,11 @@ export function renderSessionLine(ctx: RenderContext): string {
         const usageBarEnabled = display?.usageBarEnabled ?? true;
         if (usageCompact) {
           const fiveHourPart = fiveHour !== null
-            ? formatCompactWindowPart('5h', fiveHour, ctx.usageData.fiveHourResetAt, timeFormat, colors, usageValueMode, wallClockOpts)
+            ? formatCompactWindowPart('5h', fiveHour, ctx.usageData.fiveHourResetAt, FIVE_HOUR_WINDOW_MS, timeFormat, colors, usageValueMode, wallClockOpts)
             : null;
           const sevenDayThreshold = display?.sevenDayThreshold ?? 80;
           const sevenDayPart = (sevenDay !== null && (fiveHour === null || sevenDay >= sevenDayThreshold))
-            ? formatCompactWindowPart('7d', sevenDay, ctx.usageData.sevenDayResetAt, timeFormat, colors, usageValueMode, wallClockOpts)
+            ? formatCompactWindowPart('7d', sevenDay, ctx.usageData.sevenDayResetAt, SEVEN_DAY_WINDOW_MS, timeFormat, colors, usageValueMode, wallClockOpts)
             : null;
 
           if (fiveHourPart && sevenDayPart) {
@@ -265,6 +270,7 @@ export function renderSessionLine(ctx: RenderContext): string {
             label: t('label.weekly'),
             percent: sevenDay,
             resetAt: ctx.usageData.sevenDayResetAt,
+            windowMs: SEVEN_DAY_WINDOW_MS,
             colors,
             usageBarEnabled,
             barWidth,
@@ -281,6 +287,7 @@ export function renderSessionLine(ctx: RenderContext): string {
             label: '5h',
             percent: fiveHour,
             resetAt: ctx.usageData.fiveHourResetAt,
+            windowMs: FIVE_HOUR_WINDOW_MS,
             colors,
             usageBarEnabled,
             barWidth,
@@ -296,6 +303,7 @@ export function renderSessionLine(ctx: RenderContext): string {
               label: t('label.weekly'),
               percent: sevenDay,
               resetAt: ctx.usageData.sevenDayResetAt,
+              windowMs: SEVEN_DAY_WINDOW_MS,
               colors,
               usageBarEnabled,
               barWidth,
@@ -412,12 +420,13 @@ function formatCompactWindowPart(
   windowLabel: string,
   percent: number | null,
   resetAt: Date | null,
+  windowMs: number,
   timeFormat: TimeFormatMode,
   colors?: RenderContext['config']['colors'],
   usageValueMode: UsageValueMode = 'percent',
   wallClockOpts?: WallClockOptions,
 ): string {
-  const usageDisplay = formatUsagePercent(percent, colors, usageValueMode);
+  const usageDisplay = formatUsagePercent(percent, colors, usageValueMode, windowTimeLeft(resetAt, windowMs));
   const reset = formatResetTime(resetAt, timeFormat, wallClockOpts);
   const styledLabel = label(`${windowLabel}:`, colors);
   return reset
@@ -429,11 +438,12 @@ function formatUsagePercent(
   percent: number | null,
   colors?: RenderContext['config']['colors'],
   mode: UsageValueMode = 'percent',
+  timeLeft: number | null = null,
 ): string {
   if (percent === null) {
     return label('--', colors);
   }
-  const color = getQuotaColor(percent, colors);
+  const color = getQuotaColor(percent, colors, timeLeft);
   const displayPercent = mode === 'remaining' ? Math.max(0, 100 - percent) : percent;
   return `${color}${displayPercent}%${RESET}`;
 }
@@ -442,6 +452,7 @@ function formatUsageWindowPart({
   label: windowLabel,
   percent,
   resetAt,
+  windowMs,
   colors,
   usageBarEnabled,
   barWidth,
@@ -455,6 +466,7 @@ function formatUsageWindowPart({
   label: string;
   percent: number | null;
   resetAt: Date | null;
+  windowMs: number;
   colors?: RenderContext['config']['colors'];
   usageBarEnabled: boolean;
   barWidth: number;
@@ -465,7 +477,8 @@ function formatUsageWindowPart({
   windowDurationLabel?: string;
   wallClockOpts?: WallClockOptions;
 }): string {
-  const usageDisplay = formatUsagePercent(percent, colors, usageValueMode);
+  const timeLeft = percent === null ? null : windowTimeLeft(resetAt, windowMs);
+  const usageDisplay = formatUsagePercent(percent, colors, usageValueMode, timeLeft);
   const reset = formatResetTime(resetAt, timeFormat, wallClockOpts);
   const styledLabel = label(windowLabel, colors);
   // "resets in X" for relative/both; "resets X" for absolute (avoids "resets in at 14:30")
@@ -477,9 +490,8 @@ function formatUsageWindowPart({
     const barReset = timeFormat === 'relative'
       ? (reset ? `${reset} / ${windowDurationLabel ?? windowLabel}` : null)
       : (reset ? (showResetLabel ? `${t(resetsKey)} ${reset}` : reset) : null);
-    const body = barReset
-      ? `${quotaBar(percent ?? 0, barWidth, colors, usageValueMode === 'remaining' && percent !== null)} ${usageDisplay} (${barReset})`
-      : `${quotaBar(percent ?? 0, barWidth, colors, usageValueMode === 'remaining' && percent !== null)} ${usageDisplay}`;
+    const bar = quotaBar(percent ?? 0, barWidth, colors, usageValueMode === 'remaining' && percent !== null, timeLeft);
+    const body = barReset ? `${bar} ${usageDisplay} (${barReset})` : `${bar} ${usageDisplay}`;
     return forceLabel ? `${styledLabel} ${body}` : body;
   }
 
