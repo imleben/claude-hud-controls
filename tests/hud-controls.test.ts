@@ -55,7 +55,11 @@ async function open(
     model = `claude-${String(e.value)}-5-5`
     return { value: e.value }
   })
-  on('ui.toast', () => ({ value: undefined }))
+  const toasts: string[] = []
+  on('ui.toast', ($, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
   on('config.list', () => ({ value: [] }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('command.run', { command: 'effort' }, ($, e) => {
@@ -113,7 +117,7 @@ async function open(
   const pending = () => JSON.parse(files[PENDING] ?? '{}') as { effort?: unknown }
 
   await click(/(Fable|Opus|Sonnet|Haiku)/i.exec(model)?.[1]?.replace(/^./, one => one.toUpperCase()) ?? '')
-  return { ui, clock, files, effortArgs, start, look, click, press, type, shown, report, pending }
+  return { ui, clock, files, effortArgs, toasts, start, look, click, press, type, shown, report, pending }
 }
 
 for (const surface of ['terminal', 'desktop'] as const) {
@@ -717,6 +721,109 @@ test('a model press mid-turn shows at once, and only the last one runs', { plugi
   expect(modelArgs).toEqual(['sonnet'])
   expect(await look('Sonnet')).toMatchObject({ weight: 'bold' })
   expect((await look('Sonnet'))?.underline).not.toBe(true)
+})
+
+// A typed /model applies from the running turn's next request; a press's
+// command waits for the turn to end, so the row sends the requests to the
+// family's newest id Claude Code has sent before. A family never sent waits.
+test('a model press mid-turn applies to the running turn at once', { plugins: [QUEUE] }, async ($, on) => {
+  const stored: Record<string, unknown> = {}
+  on('store.get', ($, e) => ({ value: stored[e.key] }))
+  on('store.set', ($, e) => {
+    stored[e.key] = e.value
+    return { value: undefined }
+  })
+  const sent: string[] = []
+  on('turn.step', async function* ($, e) {
+    sent.push(`${e.agentId ?? 'main'}:${e.model}:${String(e.effort)}`)
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: null }
+  })
+  const modelArgs: string[] = []
+  on('command.run', { command: 'model' }, ($, e) => {
+    modelArgs.push(e.args)
+    return { text: `Set model to ${e.args}` }
+  })
+  const row = await open($, on)
+  const step = async (model = 'claude-opus-5-5', agentId?: string) => {
+    const stream = $.turn.step({
+      turnId: 't1',
+      index: sent.length,
+      model,
+      effort: 'medium',
+      messageCount: 1,
+      ...(agentId === undefined ? {} : { agentId }),
+    })
+    for await (const _ of stream) void _
+  }
+
+  // Requests Claude Code sent before teach the row each family's newest id.
+  await step('claude-sonnet-5-5')
+  await step('claude-sonnet-5')
+  await step('claude-opus-5-5', 'agent-1')
+  sent.length = 0
+  const sonnet = await row.press('Sonnet')
+  expect(row.toasts).toContain('Set model to claude-sonnet-5-5')
+  await step()
+  await step('claude-opus-5-5', 'agent-1')
+  expect(sent).toEqual(['main:claude-sonnet-5-5:medium', 'agent-1:claude-opus-5-5:medium'])
+
+  // Fable was never sent here: its press waits for the turn to end.
+  const fable = await row.press('Fable')
+  expect(row.toasts).toContain('Model fable: applies when the current turn ends')
+  await step()
+  expect(sent[2]).toBe('main:claude-opus-5-5:medium')
+  await row.clock.advance(1000)
+  await Promise.all([sonnet.pressing, fable.pressing])
+  expect(modelArgs).toEqual(['fable'])
+})
+
+// Dates are no release, another provider's id is not this one's, and `[1m]`
+// asks for more than the model: none of them misleads a press.
+test('a model press mid-turn names the newest id sent from the same provider', { plugins: [QUEUE] }, async ($, on) => {
+  const stored: Record<string, unknown> = {}
+  on('store.get', ($, e) => ({ value: stored[e.key] }))
+  on('store.set', ($, e) => {
+    stored[e.key] = e.value
+    return { value: undefined }
+  })
+  const sent: string[] = []
+  on('turn.step', async function* ($, e) {
+    sent.push(e.model)
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: null }
+  })
+  const modelArgs: string[] = []
+  on('command.run', { command: 'model' }, ($, e) => {
+    modelArgs.push(e.args)
+    return { text: `Set model to ${e.args}` }
+  })
+  const row = await open($, on)
+  const step = async (model = 'claude-opus-5-5') => {
+    const stream = $.turn.step({ turnId: 't1', index: sent.length, model, effort: 'medium', messageCount: 1 })
+    for await (const _ of stream) void _
+  }
+
+  for (const id of [
+    'claude-haiku-4-5-20251001',
+    'claude-haiku-4-20250514',
+    'us.anthropic.claude-haiku-5-5-v1:0',
+    'claude-sonnet-5-5',
+    'claude-3-5-sonnet-20241022',
+    'claude-fable-5-1[1m]',
+  ]) {
+    await step(id)
+  }
+  sent.length = 0
+  const presses = [await row.press('Haiku')]
+  await step()
+  presses.push(await row.press('Sonnet'))
+  await step()
+  presses.push(await row.press('Fable'))
+  await step()
+  await step('claude-opus-5-5[1m]')
+  expect(sent).toEqual(['claude-haiku-4-5-20251001', 'claude-sonnet-5-5', 'claude-fable-5-1', 'claude-opus-5-5[1m]'])
+  await row.clock.advance(1000)
+  await Promise.all(presses.map(one => one.pressing))
+  expect(modelArgs).toEqual(['fable'])
 })
 
 test('pressing the running model mid-turn takes back a waiting model press', { plugins: [QUEUE] }, async ($, on) => {

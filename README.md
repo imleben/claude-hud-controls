@@ -42,9 +42,17 @@ clicked too.
   it, so the session switches at once to that family's latest release. The
   row names the family only; the statusline shows the exact version.
   - Claude Code's confirmations apply as they do for a typed `/model`.
-  - During a turn, a click shows at once, bold and **underlined**, and runs
-    when the turn ends, since Claude Code holds a plugin's command until then.
-    Only the last click runs.
+  - During a turn, a click applies at once, as a typed `/model` does: the
+    turn's next request already goes to the new model.
+    - Claude Code holds a plugin's `/model` until the turn ends, so until then
+      the row sends each request to the newest id Claude Code has already sent
+      that family's requests as, from the same provider (it remembers them
+      across sessions). The model shows bold and **underlined** until the
+      command runs.
+    - A family Claude Code has not sent a request to from this provider yet,
+      or a request with a suffix such as `[1m]`, waits for the turn to end.
+      Subagents keep their own model.
+    - Only the last click runs.
 - A click on a model also opens the effort choices. A click on the running
   model while they are open closes them.
 

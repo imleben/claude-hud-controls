@@ -59,6 +59,53 @@ function family(id: string) {
   return MODELS.find(one => id.includes(one.alias))?.alias
 }
 
+// An id's release numbers, its dates left out (`claude-opus-4-1-20250805` is 4, 1).
+function release(id: string) {
+  return (id.match(/\d+/g) ?? []).filter(part => part.length < 4).map(Number)
+}
+
+function isOlder(id: string, than: string) {
+  const [a, b] = [release(id), release(than)]
+  const at = a.findIndex((one, i) => one !== b[i])
+  return at === -1 ? a.length < b.length : b[at] !== undefined && a[at]! < b[at]!
+}
+
+// Where an id is served from: the id without its family, release and dates
+// (`claude-*` first party, `us.anthropic.claude-*-v:` on Bedrock).
+function provider(id: string, alias: string) {
+  return id.replace(alias, '*').replace(/\d+/g, '').replace(/-+/g, '-').replace(/-$/, '')
+}
+
+// The newest id Claude Code sent each family's requests as, per provider, kept
+// across sessions. Claude Code alone resolves an alias, and a rewritten request
+// is not asked for consent, so a press mid-turn only names an id it already sent.
+async function sentIds($: EngineInterface) {
+  const ids = await $.store.get('sentIds').catch(() => undefined)
+  return (ids !== null && typeof ids === 'object' ? ids : {}) as Record<string, Record<string, string>>
+}
+
+async function noteSent($: EngineInterface, sent: string) {
+  await $.store.set('lastSent', sent).catch(() => undefined)
+  // `[1m]` and the like ask for more than the model: its own id is kept.
+  const id = sent.replace(/\[.*\]$/, '')
+  const alias = family(id)
+  if (alias === undefined) return
+  const ids = await sentIds($)
+  const at = provider(id, alias)
+  const known = ids[at]?.[alias]
+  if (known === id || (known !== undefined && isOlder(id, known))) return
+  await $.store.set('sentIds', { ...ids, [at]: { ...ids[at], [alias]: id } }).catch(() => undefined)
+}
+
+// The id a press of `alias` sends the turn's requests to now, if any: one sent
+// from the provider the session's requests go to, never past a `[1m]` request.
+async function sendsTo($: EngineInterface, alias: string, current?: string) {
+  const sent = current ?? (await $.store.get('lastSent').catch(() => undefined))
+  if (typeof sent !== 'string' || /\[.*\]$/.test(sent)) return undefined
+  const from = family(sent)
+  return from === undefined ? undefined : (await sentIds($))[provider(sent, from)]?.[alias]
+}
+
 // Haiku takes no level above high: a request asking more would fail, so the
 // queued /effort, which caps it, decides there.
 function fitsModel(level: string, model: string) {
@@ -161,7 +208,10 @@ async function pickModel($: EngineInterface, alias: string, isWorking: boolean) 
     return
   }
   await update($, pendingModel, () => alias)
-  if (isWorking) $.ui.toast(`Model ${alias}: applies when the current turn ends`)
+  if (isWorking) {
+    const sent = await sendsTo($, alias)
+    $.ui.toast(sent !== undefined ? `Set model to ${sent}` : `Model ${alias}: applies when the current turn ends`)
+  }
   // The command hook records what it switched to and clears the press.
   await $.command.run({ command: 'model', args: alias }).catch(async (error: unknown) => {
     await clearPendingModel($, alias)
@@ -361,15 +411,20 @@ export const register: Register = on => {
   })
 
   on('turn.step', async function* ($, e, next) {
-    if (e.agentId !== undefined || typeof e.effort !== 'string') return yield* next(e)
-    // A typed /effort applies from the turn's next request; a press waits in the
-    // queue until the turn ends, so its level goes on the requests until then.
+    if (e.agentId !== undefined) return yield* next(e)
+    // A typed /model or /effort applies from the turn's next request; a press
+    // waits in the queue until the turn ends, so it goes on the requests until then.
+    await noteSent($, e.model)
+    const alias = await read($, pendingModel)
+    const model = (alias !== '' && (await sendsTo($, alias, e.model))) || e.model
+    if (typeof e.effort !== 'string') return yield* next(model === e.model ? e : { ...e, model })
     // CLAUDE_CODE_EFFORT_LEVEL overrules a typed /effort, so it overrules a press.
     const queued = (await $.env.get('CLAUDE_CODE_EFFORT_LEVEL')) ? '' : await read($, pendingEffort)
-    const level = queued !== '' && fitsModel(queued, e.model) ? queued : e.effort
+    const level = queued !== '' && fitsModel(queued, model) ? queued : e.effort
     if ((await read($, effort)) !== level) await update($, effort, () => level)
 
-    return yield* next(level === e.effort ? e : { ...e, effort: level as typeof e.effort })
+    if (model === e.model && level === e.effort) return yield* next(e)
+    return yield* next({ ...e, model, effort: level as typeof e.effort })
   })
 
   on('config.set', { key: 'model' }, async ($, e, next) => {
