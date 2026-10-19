@@ -105,7 +105,7 @@ This is claude-hud 0.8.0 with these changes:
   overrides for these bars.
 - **Usage colored by pace.** The 5-hour and 7-day bars mark the share of the
   window's time still left with a thin `│`. Their bar and number stay green
-  while the quota left keeps up with the time left, take one step toward red
+  while the quota left is less than 5 points behind the time left, take one step toward red
   for every 5 points short (5, 10, 15, 20), and turn red from 25 points short.
   Without a reset time they use the scale above.
 - **Bars show what remains.** With `contextValue` or `usageValue` set to
