@@ -5,7 +5,7 @@ Clickable model, effort, workflow and ultracode switches under the Claude
 Code prompt, and a statusline HUD that agrees with them. When you pick an
 effort level, both show it right away.
 
-![The statusline above, the controls row at the bottom](docs/screenshot.png)
+![The statusline above, the controls row at the bottom](docs/screenshot-pace.png)
 
 The top lines are the statusline (`hud/`): the model and effort (`Opus 5.5
 ◔ med`), the project and git branch, then context, 5-hour and 7-day usage as

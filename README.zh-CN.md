@@ -5,7 +5,7 @@
 在 Claude Code 提示符下方提供可点击的模型、思考强度、工作流和 ultracode 控件，
 并配有与这些控件同步的状态栏 HUD。选择思考强度后，两处都会立即显示新设置。
 
-![The statusline above, the controls row at the bottom](docs/screenshot.png)
+![The statusline above, the controls row at the bottom](docs/screenshot-pace.png)
 
 上方几行是状态栏（`hud/`）：依次显示模型和思考强度（`Opus 5.5
 ◔ med`）、项目和 git 分支，以及上下文、5 小时和 7 天用量的剩余额度，
