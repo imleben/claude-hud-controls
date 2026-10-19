@@ -14,6 +14,10 @@ const effortOpen = atom({ plugin: 'hud-controls', key: 'effortOpen' } as const, 
 // It shows at once, here and on the HUD statusline; only the last press's command runs.
 const pendingEffort = atom({ plugin: 'hud-controls', key: 'pendingEffort' } as const, '')
 const pendingUltracode = atom({ plugin: 'hud-controls', key: 'pendingUltracode' } as const, false)
+// A model press whose /model waits in the queue: the row shows it at once.
+const pendingModel = atom({ plugin: 'hud-controls', key: 'pendingModel' } as const, '')
+// The id this row's last /model resolved to: pressed again, it stays.
+const pickedId = atom({ plugin: 'hud-controls', key: 'pickedId' } as const, '')
 // When a reply last changed effort: a HUD report must be written after it.
 const changedAt = atom({ plugin: 'hud-controls', key: 'changedAt' } as const, 0)
 
@@ -140,23 +144,34 @@ async function applyEffortReply($: EngineInterface, text?: string) {
   if (level !== undefined) await update($, effort, () => level)
 }
 
-async function pickModel($: EngineInterface, alias: string) {
-  const saved = ((await $.settings.read()) as Record<string, unknown>).model
-  if (saved === alias && family(await read($, modelId)) === alias) return
-  const done = await $.config
-    .set({ key: 'model', value: alias })
-    .catch((error: unknown) => ({ deny: String(error) }))
-  if (done.deny !== undefined) {
-    await $.command.run({ command: 'model', args: alias })
+// /model with the family alias, as typed: it switches the running session to the
+// family's latest release. The /config model row only saves, so it is not used.
+async function pickModel($: EngineInterface, alias: string, isWorking: boolean) {
+  const id = await read($, modelId)
+  if ((await read($, pendingModel)) === alias) return
+  // Already running what this row picked: a press waiting for another model is taken back.
+  if (family(id) === alias && (await read($, pickedId)) === id) {
+    await update($, pendingModel, () => '')
+    return
   }
-  await syncModel($)
+  await update($, pendingModel, () => alias)
+  if (isWorking) $.ui.toast(`Model ${alias}: applies when the current turn ends`)
+  // The command hook records what it switched to and clears the press.
+  await $.command.run({ command: 'model', args: alias }).catch(async (error: unknown) => {
+    await clearPendingModel($, alias)
+    throw error
+  })
 }
 
-// A model press opens the effort choices; pressing the running model again closes them.
-async function pressModel($: EngineInterface, alias: string) {
-  const isSame = family(await read($, modelId)) === alias
-  await update($, effortOpen, isOpen => !(isSame && isOpen))
-  await pickModel($, alias)
+async function clearPendingModel($: EngineInterface, alias: string) {
+  if ((await read($, pendingModel)) === alias) await update($, pendingModel, () => '')
+}
+
+// A model press opens the effort choices; pressing the shown model again closes them.
+async function pressModel($: EngineInterface, alias: string, isWorking: boolean) {
+  const shown = (await read($, pendingModel)) || family(await read($, modelId))
+  await update($, effortOpen, isOpen => !(shown === alias && isOpen))
+  await pickModel($, alias, isWorking)
 }
 
 // The choices stay open, so the pressed level shows on the row at once.
@@ -307,7 +322,7 @@ async function readCommandRow($: EngineInterface, origin: object, content: reado
 function actionFor($: EngineInterface, key: string, isWorking: boolean) {
   const [kind, value = ''] = key.split(':')
   if (kind === 'model' && MODELS.some(one => one.alias === value)) {
-    return () => pressModel($, value)
+    return () => pressModel($, value, isWorking)
   }
   if (kind === 'effort' && LEVELS.includes(value)) return () => pickEffort($, value, isWorking)
   if (key === 'workflows') return () => toggleWorkflows($)
@@ -410,8 +425,19 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e))
 
   on('command.run', { command: 'model' }, async ($, e, next) => {
+    const isRow = e.origin.kind === 'plugin' && e.origin.name === 'hud-controls'
+    // A later press replaced this one while it waited: it runs nothing.
+    if (isRow && (await read($, pendingModel)) !== e.args.trim()) return {}
+    // A /model typed at the prompt replaces a waiting press.
+    if (!isRow) await update($, pendingModel, () => '')
     const done = await next(e)
     await syncModel($)
+    if (isRow) {
+      const alias = e.args.trim()
+      const id = await read($, modelId)
+      if (family(id) === alias) await update($, pickedId, () => id)
+      await clearPendingModel($, alias)
+    }
 
     return done
   }).catch(($, e, next) => next(e))
@@ -447,7 +473,8 @@ export const register: Register = on => {
     const isWorkflowOn = await read($, workflows)
     const isUltracodeOn = (await read($, ultracode)) !== isUltracodeQueued
     const isEffortOpen = await read($, effortOpen)
-    const current = MODELS.find(one => one.alias === family(id))
+    const queuedModel = await read($, pendingModel)
+    const current = MODELS.find(one => one.alias === (queuedModel || family(id)))
     // Effort and the switches take the running model's color.
     const accent = current?.color ?? PLAIN
 
@@ -473,7 +500,9 @@ export const register: Register = on => {
     // A family alone: the saved alias follows its latest release, and the
     // statusline above names the exact version.
     const segments: Segment[] = [
-      ...MODELS.map(one => run(`model:${one.alias}`, one.label, one === current, one.color)),
+      ...MODELS.map(one =>
+        run(`model:${one.alias}`, one.label, one === current, one.color, undefined, one.alias === queuedModel),
+      ),
       ...(isEffortOpen
         ? [
             bar,

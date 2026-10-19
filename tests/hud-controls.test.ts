@@ -155,7 +155,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     })
     on('command.run', { command: 'model' }, ($, e) => {
       modelArgs.push(e.args)
-      model = e.args
+      model = `claude-${e.args}-5-5`
       return { text: `Set model to ${e.args}` }
     })
     on('command.run', { command: 'effort' }, ($, e) => {
@@ -199,23 +199,22 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await look('Opus')).toMatchObject({ color: '#f5a46c', weight: 'bold' })
     expect(JSON.stringify(await look('Opus'))).not.toContain('backgroundColor')
 
-    // A pinned id is moved back to the family alias, which tracks the latest;
+    // A press runs /model with the family alias, which switches to the latest;
     // pressing the running model opens the effort choices, again closes them.
     await click('Opus')
-    expect(modelSets).toEqual(['opus'])
+    expect(modelArgs).toEqual(['opus'])
     expect(await row()).toContain('│ lw md hg xh mx │')
     await click('Opus')
-    expect(modelSets).toEqual(['opus'])
+    expect(modelArgs).toEqual(['opus'])
     expect(await row()).not.toContain('hg')
 
     // A miss (the space between runs) presses nothing.
     await ui.pointer({ type: 'down', x: 5, y: 0, button: 'left', in: 'controls' })
-    expect(modelSets).toEqual(['opus'])
+    expect(modelArgs).toEqual(['opus'])
 
     await click('Sonnet')
-    expect(modelSets).toEqual(['opus', 'sonnet'])
+    expect(modelArgs).toEqual(['opus', 'sonnet'])
     expect(await look('Sonnet')).toMatchObject({ weight: 'bold' })
-    expect(modelArgs).toEqual([])
 
     // Picking an effort keeps the choices open; effort takes the model's color.
     await click('hg')
@@ -240,7 +239,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     // A narrow region wraps onto a second row that clicks still reach.
     await ui.resize({ columns: 20, rows: 3, in: 'controls' })
     await click('Haiku', 1)
-    expect(modelSets).toEqual(['opus', 'sonnet', 'haiku'])
+    expect(modelArgs).toEqual(['opus', 'sonnet', 'haiku'])
   })
 }
 
@@ -576,4 +575,141 @@ test('a new session drops a press an ended process left in the HUD file', async 
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
   expect(JSON.parse(files[PENDING] ?? '{}')).toEqual({ effort: null })
+})
+
+// The /config model row only saves: the running session keeps its model.
+test('a model press runs /model, so an older running model moves to the latest', async ($, on) => {
+  let model = 'claude-opus-5'
+  const modelArgs: string[] = []
+  const modelSets: string[] = []
+  mock.clock(on, { now: 1_000_000 })
+  share(on)
+  on('session.model', () => ({ value: model }))
+  on('settings.read', () => ({ value: { model: 'opus' } }))
+  on('config.set', { key: 'model' }, ($, e) => {
+    modelSets.push(String(e.value))
+    return { value: e.value }
+  })
+  on('command.run', { command: 'model' }, ($, e) => {
+    modelArgs.push(e.args)
+    model = { opus: 'claude-opus-5-5', fable: 'claude-fable-5-1' }[e.args] ?? e.args
+    return { text: `Set model to ${e.args}` }
+  })
+  on('ui.toast', () => ({ value: undefined }))
+  on('config.list', () => ({ value: [] }))
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: 'hud-controls', surface: 'terminal', component: 'PromptHint', props: PROPS })
+  await ui.resize({ columns: 200, rows: 1, in: 'controls' })
+  const row = async () => (await ui.find({ in: 'controls', key: 'row:0' }))?.text ?? ''
+  const look = async (label: string) =>
+    (await ui.find({ in: 'controls', type: 'Text', text: new RegExp(`^${label}$`) }))?.props
+  const click = async (label: string) =>
+    ui.pointer({ type: 'down', x: (await row()).indexOf(label), y: 0, button: 'left', in: 'controls' })
+
+  await click('Opus')
+  expect(modelArgs).toEqual(['opus'])
+  expect(model).toBe('claude-opus-5-5')
+  await click('Fable')
+  expect(modelArgs).toEqual(['opus', 'fable'])
+  expect(await look('Fable')).toMatchObject({ color: '#c3a6ff', weight: 'bold' })
+  expect(await look('Opus')).not.toMatchObject({ weight: 'bold' })
+  // Pressed again, the model this row just set only toggles the effort choices.
+  await click('Fable')
+  await click('Fable')
+  expect(modelArgs).toEqual(['opus', 'fable'])
+  expect(modelSets).toEqual([])
+})
+
+test('a model press mid-turn shows at once, and only the last one runs', { plugins: [QUEUE] }, async ($, on) => {
+  let model = 'claude-opus-5-5'
+  const modelArgs: string[] = []
+  const clock = mock.clock(on, { now: 1_000_000 })
+  share(on)
+  on('session.model', () => ({ value: model }))
+  on('settings.read', () => ({ value: { model: 'opus' } }))
+  on('command.run', { command: 'model' }, ($, e) => {
+    modelArgs.push(e.args)
+    model = `claude-${e.args}-5-5`
+    return { text: `Set model to ${e.args}` }
+  })
+  on('ui.toast', () => ({ value: undefined }))
+  on('config.list', () => ({ value: [] }))
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({
+    plugin: 'hud-controls',
+    surface: 'terminal',
+    component: 'PromptHint',
+    props: { ...PROPS, isWorking: true },
+  })
+  await ui.resize({ columns: 200, rows: 1, in: 'controls' })
+  const row = async () => (await ui.find({ in: 'controls', key: 'row:0' }))?.text ?? ''
+  const look = async (label: string) =>
+    (await ui.find({ in: 'controls', type: 'Text', text: new RegExp(`^${label}$`) }))?.props
+  const press = async (label: string) => {
+    const pressing = ui.pointer({ type: 'down', x: (await row()).indexOf(label), y: 0, button: 'left', in: 'controls' })
+    for (let tries = 0; tries < 50 && (await look(label))?.underline !== true; tries++) await ui.advance(10)
+    return pressing
+  }
+
+  const fable = await press('Fable')
+  expect(await look('Fable')).toMatchObject({ weight: 'bold', underline: true })
+  expect(await look('Opus')).not.toMatchObject({ weight: 'bold' })
+  const sonnet = await press('Sonnet')
+  expect(await look('Sonnet')).toMatchObject({ weight: 'bold', underline: true })
+  await clock.advance(1000)
+  await Promise.all([fable, sonnet])
+  expect(modelArgs).toEqual(['sonnet'])
+  expect(await look('Sonnet')).toMatchObject({ weight: 'bold' })
+  expect((await look('Sonnet'))?.underline).not.toBe(true)
+})
+
+test('pressing the running model mid-turn takes back a waiting model press', { plugins: [QUEUE] }, async ($, on) => {
+  let model = 'claude-opus-5-5'
+  const modelArgs: string[] = []
+  const clock = mock.clock(on, { now: 1_000_000 })
+  share(on)
+  on('session.model', () => ({ value: model }))
+  on('settings.read', () => ({ value: { model: 'opus' } }))
+  on('command.run', { command: 'model' }, ($, e) => {
+    modelArgs.push(e.args)
+    model = `claude-${e.args}-5-5`
+    return { text: `Set model to ${e.args}` }
+  })
+  on('ui.toast', () => ({ value: undefined }))
+  on('config.list', () => ({ value: [] }))
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({
+    plugin: 'hud-controls',
+    surface: 'terminal',
+    component: 'PromptHint',
+    props: { ...PROPS, isWorking: true },
+  })
+  await ui.resize({ columns: 200, rows: 1, in: 'controls' })
+  const row = async () => (await ui.find({ in: 'controls', key: 'row:0' }))?.text ?? ''
+  const look = async (label: string) =>
+    (await ui.find({ in: 'controls', type: 'Text', text: new RegExp(`^${label}$`) }))?.props
+  const press = async (label: string) => {
+    const pressing = ui.pointer({ type: 'down', x: (await row()).indexOf(label), y: 0, button: 'left', in: 'controls' })
+    for (let tries = 0; tries < 50 && (await look(label))?.underline !== true; tries++) await ui.advance(10)
+    return pressing
+  }
+
+  // The row's own /model opus: the running id is now the one it picked.
+  const opus = await press('Opus')
+  await clock.advance(1000)
+  await opus
+  expect(modelArgs).toEqual(['opus'])
+
+  const fable = await press('Fable')
+  expect(await look('Fable')).toMatchObject({ weight: 'bold', underline: true })
+  await ui.pointer({ type: 'down', x: (await row()).indexOf('Opus'), y: 0, button: 'left', in: 'controls' })
+  expect(await look('Opus')).toMatchObject({ weight: 'bold' })
+  expect((await look('Fable'))?.underline).not.toBe(true)
+  await clock.advance(1000)
+  await fable
+  expect(modelArgs).toEqual(['opus'])
+  expect(model).toBe('claude-opus-5-5')
 })

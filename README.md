@@ -38,11 +38,12 @@ clicked too.
 
 - Each family has its own color: Fable violet, Opus orange, Sonnet blue and
   Haiku green. The running model is bold in full color; the others are dimmed.
-- A click switches the model and saves the family alias (`opus`, `sonnet`, …)
-  as your model setting. The alias always follows that family's latest
-  release, so the row names the family only. The statusline shows the exact
-  version.
-  - If Claude Code refuses the setting, the row runs `/model <alias>` instead.
+- A click runs `/model <alias>` (`opus`, `sonnet`, …), the same as typing
+  it, so the session switches at once to that family's latest release. The
+  row names the family only; the statusline shows the exact version.
+  - Claude Code's confirmations apply as they do for a typed `/model`.
+  - During a turn, a click shows at once (underlined) and applies when the
+    turn ends; only the last click runs.
 - A click on a model also opens the effort choices. A click on the running
   model while they are open closes them.
 

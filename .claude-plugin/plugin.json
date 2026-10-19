@@ -1,6 +1,6 @@
 {
   "name": "hud-controls",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Clickable model, effort, workflow and ultracode switches in the hint row under the prompt",
   "author": {
     "name": "imleben"

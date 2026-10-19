@@ -11,6 +11,8 @@ declare module 'claude-code' {
       effortOpen: boolean
       pendingEffort: string
       pendingUltracode: boolean
+      pendingModel: string
+      pickedId: HudModelId
       changedAt: number
     }
   }
