@@ -14,6 +14,8 @@ const effortOpen = atom({ plugin: 'hud-controls', key: 'effortOpen' } as const, 
 // It shows at once, here and on the HUD statusline; only the last press's command runs.
 const pendingEffort = atom({ plugin: 'hud-controls', key: 'pendingEffort' } as const, '')
 const pendingUltracode = atom({ plugin: 'hud-controls', key: 'pendingUltracode' } as const, false)
+// Whether the row has learned the ultracode switch this session (it starts unknown).
+const ultracodeKnown = atom({ plugin: 'hud-controls', key: 'ultracodeKnown' } as const, false)
 // A model press whose /model waits in the queue: the row shows it at once.
 const pendingModel = atom({ plugin: 'hud-controls', key: 'pendingModel' } as const, '')
 // The id this row's last /model resolved to: pressed again, it stays.
@@ -149,10 +151,29 @@ async function sharedFile($: EngineInterface, suffix: string) {
 }
 
 // The file only shows the press on the statusline: a write that fails costs that, not the press.
+// It also shows the ultracode switch as the row does, once the row knows it.
 async function sharePending($: EngineInterface) {
   const file = await sharedFile($, '.pending.json')
   const level = await read($, pendingEffort)
-  if (file) await $.fs.write(file, JSON.stringify({ effort: level || null })).catch(() => undefined)
+  const isShown = (await read($, ultracode)) !== (await read($, pendingUltracode))
+  const switched = (await read($, ultracodeKnown)) ? isShown : undefined
+  if (file) {
+    await $.fs.write(file, JSON.stringify({ effort: level || null, ultracode: switched })).catch(() => undefined)
+  }
+}
+
+// The switch, or a press of it waiting: the HUD statusline shows it at once too.
+async function setUltracode($: EngineInterface, isOn: boolean) {
+  await update($, ultracode, () => isOn)
+  await update($, ultracodeKnown, () => true)
+  await sharePending($)
+}
+
+// Only a press makes the row's switch the one shown; dropping one tells nothing.
+async function setPendingUltracode($: EngineInterface, isOn: boolean) {
+  await update($, pendingUltracode, () => isOn)
+  if (isOn) await update($, ultracodeKnown, () => true)
+  await sharePending($)
 }
 
 // The HUD's report for the running model, once written after the last reply.
@@ -181,8 +202,8 @@ async function applyEffortReply($: EngineInterface, text?: string) {
   }
   const failed = /^Failed to set effort level: (.*)/i.exec(reply)?.[1]
   if (failed !== undefined) $.ui.toast(`Effort not changed: ${failed}`)
-  if (/ultracode on/i.test(reply)) await update($, ultracode, () => true)
-  if (/ultracode off/i.test(reply)) await update($, ultracode, () => false)
+  if (/ultracode on/i.test(reply)) await setUltracode($, true)
+  if (/ultracode off/i.test(reply)) await setUltracode($, false)
   // Auto leaves the level to the model, so no level is shown as chosen.
   if (/^(?:Effort level set to auto|Effort set to auto|Cleared effort)/i.test(reply)) {
     await update($, effort, () => '')
@@ -246,7 +267,7 @@ async function pickEffort($: EngineInterface, level: string, isWorking: boolean)
 
 async function clearPending($: EngineInterface, args: string) {
   if (/^ultracode /.test(args)) {
-    await update($, pendingUltracode, () => false)
+    await setPendingUltracode($, false)
     return
   }
   if ((await read($, pendingEffort)) !== args) return
@@ -264,18 +285,18 @@ async function toggleWorkflows($: EngineInterface) {
     return
   }
   await update($, workflows, () => done.value === true)
-  if (done.value !== true) await update($, ultracode, () => false)
+  if (done.value !== true) await setUltracode($, false)
 }
 
 async function toggleUltracode($: EngineInterface, isWorking: boolean) {
   // A second press before the first one's command runs takes it back.
   if (await read($, pendingUltracode)) {
-    await update($, pendingUltracode, () => false)
+    await setPendingUltracode($, false)
     return
   }
   const isOn = !(await read($, ultracode))
   const args = `ultracode ${isOn ? 'on' : 'off'}`
-  await update($, pendingUltracode, () => true)
+  await setPendingUltracode($, true)
   if (isWorking) $.ui.toast(`Ultracode ${isOn ? 'on' : 'off'}: applies when the current turn ends`)
   await $.command.run({ command: 'effort', args }).catch(async (error: unknown) => {
     await clearPending($, args)
@@ -315,8 +336,8 @@ function keep<T>(list: T[], one: T) {
 
 async function showAsked($: EngineInterface, args: string) {
   const asked = args.trim().toLowerCase()
-  if (asked === 'ultracode on') await update($, ultracode, () => true)
-  else if (asked === 'ultracode off') await update($, ultracode, () => false)
+  if (asked === 'ultracode on') await setUltracode($, true)
+  else if (asked === 'ultracode off') await setUltracode($, false)
   else if (asked === 'auto') await update($, effort, () => '')
   else if (LEVELS.includes(asked)) await update($, effort, () => asked)
 }
@@ -325,7 +346,7 @@ async function readReply($: EngineInterface, run: Run, text: string) {
   if (run.isRead) return
   // A refusal changed nothing: the level or switch goes back to what it was.
   if (/^Failed to set effort level|needs dynamic workflows/i.test(text)) {
-    if (/^ultracode /i.test(run.args)) await update($, ultracode, () => run.was.ultracode)
+    if (/^ultracode /i.test(run.args)) await setUltracode($, run.was.ultracode)
     else await update($, effort, () => run.was.effort)
   }
   await applyEffortReply($, text)
@@ -438,7 +459,7 @@ export const register: Register = on => {
     const done = await next(e)
     if (done.deny === undefined) {
       await update($, workflows, () => done.value === true)
-      if (done.value !== true) await update($, ultracode, () => false)
+      if (done.value !== true) await setUltracode($, false)
     }
 
     return done
@@ -451,7 +472,7 @@ export const register: Register = on => {
     // An /effort typed at the prompt replaces the press of its kind still waiting.
     const typed = isRow ? '' : e.args.trim()
     if (/^ultracode\b/i.test(typed)) {
-      await update($, pendingUltracode, () => false)
+      await setPendingUltracode($, false)
     } else if (typed !== '') {
       await update($, pendingEffort, () => '')
       await sharePending($)

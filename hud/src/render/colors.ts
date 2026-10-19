@@ -154,26 +154,16 @@ export function windowTimeLeft(resetAt: Date | null, windowMs: number): number |
   return Number.isFinite(left) ? Math.max(0, Math.min(100, left)) : null;
 }
 
-// Local patch: with the share of the window's time still left, color by pace:
-// green while quota left keeps up with time left, then one step per 5 points
-// short (5, 10, 15, 20), red from 25 short.
-export function getQuotaColor(
-  percent: number,
-  _colors?: Partial<HudColorOverrides>,
-  timeLeft: number | null = null,
-): string {
-  if (timeLeft === null || !Number.isFinite(timeLeft) || !Number.isFinite(percent)) {
-    return gradientColor(percent);
-  }
-  const short = timeLeft - (100 - percent);
-  const step = Math.min(5, Math.max(0, Math.floor(short / 5)));
-  return gradientColor(step * 20);
+// Local patch: usage takes the context scale, by quota alone: dark green
+// with all of it left, red with none. The time-left mark leaves it alone.
+export function getQuotaColor(percent: number, _colors?: Partial<HudColorOverrides>): string {
+  return gradientColor(percent);
 }
 
 // Local patch: the bar is one row of background color, no block glyphs.
 // remaining=true fills it by what is left (100 - percent); the fill takes the
-// same color as the number beside it. With timeLeft, a thin │ stands where the
-// fill would end on pace (time left, or time gone when the bar shows use).
+// same color as the number beside it. With timeLeft, a thin │ marks the share
+// of the window's time left (or gone, when the bar shows use).
 function gradientBar(
   percent: number,
   width: number,
@@ -185,7 +175,7 @@ function gradientBar(
   const safePercent = Number.isFinite(percent) ? Math.min(100, Math.max(0, percent)) : 0;
   const level = remaining ? 100 - safePercent : safePercent;
   const filled = level > 0 && safeWidth > 0 ? Math.max(1, Math.round((level / 100) * safeWidth)) : 0;
-  const fill = getQuotaColor(safePercent, colors, timeLeft).replace('[38;', '[48;');
+  const fill = getQuotaColor(safePercent, colors).replace('[38;', '[48;');
   let at = -1;
   if (timeLeft !== null && Number.isFinite(timeLeft) && safeWidth > 0) {
     const pace = Math.min(100, Math.max(0, remaining ? timeLeft : 100 - timeLeft));

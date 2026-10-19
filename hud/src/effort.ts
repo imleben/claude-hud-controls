@@ -9,9 +9,9 @@ export interface EffortInfo {
 }
 
 export interface ResolveEffortOptions {
-  // Current ultracode effort state from the transcript (see transcript.ts).
-  // stdin reports ultracode as a normal level, so this is the only signal that
-  // distinguishes it.
+  // Current ultracode effort state: the hud-controls row's switch when it
+  // shares one, else the transcript's (see transcript.ts). stdin reports
+  // ultracode as a normal level, so these are the only signals.
   ultracodeActive?: boolean;
 }
 
@@ -97,21 +97,28 @@ const LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'];
 // Files of sessions this old are gone; the folder is swept when a session first reports.
 const SHARED_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
+export interface SharedEffort {
+  effort: StdinEffortInput;
+  // The ultracode switch as the mod's row shows it; undefined until the row knows it.
+  ultracode?: boolean;
+}
+
 /**
  * Trades effort with the hud-controls mod (this repository's root), per
  * session, in `~/.claude/hud-controls`: writes `<id>.json` with the model and
  * level Claude Code hands this statusline, stamped `at` when the run started,
- * and returns the level the mod's row was pressed to from `<id>.pending.json`
- * while its /effort waits for the turn to end.
+ * and returns from `<id>.pending.json` the level the mod's row was pressed to
+ * while its /effort waits for the turn to end, and the ultracode switch as the
+ * row shows it.
  */
 export function shareEffort(
   stdin: StdinData,
   startedAt = Date.now(),
   dir = join(homedir(), '.claude', 'hud-controls'),
-): StdinEffortInput {
+): SharedEffort {
   const id = stdin.session_id;
   if (!id || !/^[\w-]+$/.test(id)) {
-    return stdin.effort;
+    return { effort: stdin.effort };
   }
   try {
     const report = join(dir, `${id}.json`);
@@ -133,16 +140,20 @@ export function shareEffort(
     if (isFirst) {
       sweepShared(dir, startedAt);
     }
-    const pending = (JSON.parse(readFileSync(join(dir, `${id}.pending.json`), 'utf8')) as {
+    const pending = JSON.parse(readFileSync(join(dir, `${id}.pending.json`), 'utf8')) as {
       effort?: unknown;
-    }).effort;
-    if (typeof pending === 'string' && LEVELS.includes(pending)) {
-      return { level: pending };
-    }
+      ultracode?: unknown;
+    };
+    return {
+      effort: typeof pending.effort === 'string' && LEVELS.includes(pending.effort)
+        ? { level: pending.effort }
+        : stdin.effort,
+      ultracode: typeof pending.ultracode === 'boolean' ? pending.ultracode : undefined,
+    };
   } catch {
     // No row pressed yet, or a file half written: the reported level stands.
   }
-  return stdin.effort;
+  return { effort: stdin.effort };
 }
 
 function sweepShared(dir: string, now: number): void {

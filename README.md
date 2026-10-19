@@ -100,8 +100,14 @@ clicked too.
     `Ultracode needs Workflow turned on`.
   - Turning workflows off also shows ultracode as off.
 - A switch is gray while off, and bold in the model's color while on.
-- A `uc` click during a turn shows at once, underlined, and runs when the turn
-  ends. Clicking `uc` again before then cancels it.
+- A `uc` click during a turn shows at once, underlined, on the row and on the
+  statusline, and runs when the turn ends. Clicking `uc` again before then
+  cancels it.
+  - Unlike effort and model, ultracode can't apply to the running turn:
+    Claude Code holds a plugin's command until the turn ends and runs a
+    command mid-turn only when you type it, and a request has no ultracode
+    field the row could set. A typed `/effort ultracode` also reaches the
+    model only from your next prompt.
 
 ### The statusline (`hud/`)
 
@@ -114,11 +120,10 @@ This is claude-hud 0.8.0 with these changes:
   It gets brighter as use grows, so an idle bar stays dim and a full one
   stands out. This scale replaces claude-hud's fixed thresholds and the color
   overrides for these bars.
-- **Usage colored by pace.** The 5-hour and 7-day bars mark the share of the
-  window's time still left with a thin `│`. Their bar and number stay green
-  while the quota left is less than 5 points behind the time left, take one step toward red
-  for every 5 points short (5, 10, 15, 20), and turn red from 25 points short.
-  Without a reset time they use the scale above.
+- **Usage on the same scale.** The 5-hour and 7-day bars and numbers use the
+  scale above, by the quota used: dark green with all of it left, red with
+  none. A thin `│` marks the share of the window's time still left; it does
+  not change the color.
 - **Bars show what remains.** With `contextValue` or `usageValue` set to
   `"remaining"` (as in `hud/config.json`), the bar fills by what is left,
   matching the number beside it. A bar with anything left shows at least one
@@ -128,9 +133,12 @@ This is claude-hud 0.8.0 with these changes:
 - **A steadier usage line.** Reset times on the usage line have no
   parentheses, and a `5h --` placeholder keeps the layout steady when Claude
   Code sends no 5-hour window.
-- **Effort shared with the row.** The statusline shows a level clicked on the
-  row while it waits for the turn to end. It also reports the level Claude
-  Code hands it, so the row can show that level.
+- **Effort and ultracode shared with the row.** The statusline shows a level
+  clicked on the row while it waits for the turn to end. It also reports the
+  level Claude Code hands it, so the row can show that level. Its
+  `ultracode` label follows the row's `uc` switch at once, including a typed
+  `/effort ultracode`; claude-hud alone reads it from the transcript, which
+  changes only when the next turn starts.
 
 ## Install
 
@@ -194,7 +202,7 @@ files stay on your machine and hold no prompt or transcript content.
 | File | Written by | Holds |
 | --- | --- | --- |
 | `<session>.json` | the statusline, on each run | the model id and effort level Claude Code handed it, and when the run started |
-| `<session>.pending.json` | the row | a clicked level still waiting for the turn to end, or `null` |
+| `<session>.pending.json` | the row | a clicked level still waiting for the turn to end, or `null`, and the ultracode switch as the row shows it, once the row knows it |
 
 Two rules keep the row from showing an outdated level:
 
@@ -222,7 +230,8 @@ claude plugin test .
 The tests run the row against a mocked Claude Code. They cover:
 
 - clicks and colors, on the terminal and on the desktop;
-- a click made during a turn, and which click finally runs;
+- a click made during a turn, which click finally runs, and the requests
+  it applies to;
 - refusals, declined confirmations and `auto`;
 - `/effort` typed at the prompt;
 - statusline reports, including a model switch;

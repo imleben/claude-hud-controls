@@ -190,9 +190,11 @@ export async function main(overrides: Partial<MainDeps> = {}): Promise<void> {
     const claudeCodeVersion = config.display.showClaudeCodeVersion
       ? await deps.getClaudeCodeVersion()
       : undefined;
-    const effortInfo = config.display.showEffortLevel
-      ? resolveEffortLevel(shareEffort(stdin, startedAt), {
-          ultracodeActive: transcript.ultracodeActive,
+    // The row's switch shows a click at once; the transcript's lags a turn.
+    const shared = config.display.showEffortLevel ? shareEffort(stdin, startedAt) : null;
+    const effortInfo = shared
+      ? resolveEffortLevel(shared.effort, {
+          ultracodeActive: shared.ultracode ?? transcript.ultracodeActive,
         })
       : null;
     const memoryUsage =

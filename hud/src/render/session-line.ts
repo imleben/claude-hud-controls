@@ -249,11 +249,11 @@ export function renderSessionLine(ctx: RenderContext): string {
         const usageBarEnabled = display?.usageBarEnabled ?? true;
         if (usageCompact) {
           const fiveHourPart = fiveHour !== null
-            ? formatCompactWindowPart('5h', fiveHour, ctx.usageData.fiveHourResetAt, FIVE_HOUR_WINDOW_MS, timeFormat, colors, usageValueMode, wallClockOpts)
+            ? formatCompactWindowPart('5h', fiveHour, ctx.usageData.fiveHourResetAt, timeFormat, colors, usageValueMode, wallClockOpts)
             : null;
           const sevenDayThreshold = display?.sevenDayThreshold ?? 80;
           const sevenDayPart = (sevenDay !== null && (fiveHour === null || sevenDay >= sevenDayThreshold))
-            ? formatCompactWindowPart('7d', sevenDay, ctx.usageData.sevenDayResetAt, SEVEN_DAY_WINDOW_MS, timeFormat, colors, usageValueMode, wallClockOpts)
+            ? formatCompactWindowPart('7d', sevenDay, ctx.usageData.sevenDayResetAt, timeFormat, colors, usageValueMode, wallClockOpts)
             : null;
 
           if (fiveHourPart && sevenDayPart) {
@@ -420,13 +420,12 @@ function formatCompactWindowPart(
   windowLabel: string,
   percent: number | null,
   resetAt: Date | null,
-  windowMs: number,
   timeFormat: TimeFormatMode,
   colors?: RenderContext['config']['colors'],
   usageValueMode: UsageValueMode = 'percent',
   wallClockOpts?: WallClockOptions,
 ): string {
-  const usageDisplay = formatUsagePercent(percent, colors, usageValueMode, windowTimeLeft(resetAt, windowMs));
+  const usageDisplay = formatUsagePercent(percent, colors, usageValueMode);
   const reset = formatResetTime(resetAt, timeFormat, wallClockOpts);
   const styledLabel = label(`${windowLabel}:`, colors);
   return reset
@@ -438,12 +437,11 @@ function formatUsagePercent(
   percent: number | null,
   colors?: RenderContext['config']['colors'],
   mode: UsageValueMode = 'percent',
-  timeLeft: number | null = null,
 ): string {
   if (percent === null) {
     return label('--', colors);
   }
-  const color = getQuotaColor(percent, colors, timeLeft);
+  const color = getQuotaColor(percent, colors);
   const displayPercent = mode === 'remaining' ? Math.max(0, 100 - percent) : percent;
   return `${color}${displayPercent}%${RESET}`;
 }
@@ -478,7 +476,7 @@ function formatUsageWindowPart({
   wallClockOpts?: WallClockOptions;
 }): string {
   const timeLeft = percent === null ? null : windowTimeLeft(resetAt, windowMs);
-  const usageDisplay = formatUsagePercent(percent, colors, usageValueMode, timeLeft);
+  const usageDisplay = formatUsagePercent(percent, colors, usageValueMode);
   const reset = formatResetTime(resetAt, timeFormat, wallClockOpts);
   const styledLabel = label(windowLabel, colors);
   // "resets in X" for relative/both; "resets X" for absolute (avoids "resets in at 14:30")

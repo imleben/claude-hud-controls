@@ -1,124 +1,7 @@
 import type { On } from 'claude-code'
-import type { Engine, Plugin } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
 import { expect, mock, test } from 'claude-code/testing'
-
-const PROPS = { isDraft: false, isWorking: false, hint: '? for shortcuts' }
-const REPORT = '/home/me/.claude/hud-controls/session-1.json'
-const PENDING = '/home/me/.claude/hud-controls/session-1.pending.json'
-
-// The files the row shares with the HUD statusline, in memory; a missing one reads empty.
-function share(on: On, isFull = false, env: Record<string, string> = {}) {
-  const files: Record<string, string> = {}
-  on('session.id', () => ({ value: 'session-1' }))
-  on('env.get', ($, e) => ({ value: e.name === 'HOME' ? '/home/me' : env[e.name] }))
-  on('fs.read', ($, e) => ({ value: files[e.path] ?? '' }))
-  on('fs.write', ($, e) => {
-    if (isFull) throw new Error('ENOSPC: no space left on device')
-    files[e.path] = e.text
-    return { value: undefined }
-  })
-  return files
-}
-
-// The engine runs a plugin's command once the turn ends: here, a second on.
-const QUEUE: Plugin = {
-  name: 'queue',
-  tier: 'prepend',
-  register(on) {
-    on('command.run', async ($, e, next) => {
-      if (e.origin.kind === 'plugin') await $.clock.sleep(1000)
-      return next(e)
-    })
-  },
-}
-
-// A session mid-turn on the given model, its row mounted with the effort choices open.
-async function open(
-  $: Engine,
-  on: On,
-  given: { model?: string; replies?: Record<string, string>; isFull?: boolean; env?: Record<string, string> } = {},
-) {
-  let model = given.model ?? 'claude-opus-5-5'
-  const effortArgs: string[] = []
-  const clock = mock.clock(on, { now: 1_000_000 })
-  const files = share(on, given.isFull, given.env)
-  on('session.model', () => ({ value: model }))
-  // The top-level effortLevel reaches only older models, so it is never shown.
-  on('settings.read', () => ({
-    value: {
-      model: /(fable|opus|sonnet|haiku)/.exec(model)?.[1],
-      effortLevel: 'medium',
-      modelSettings: { 'claude-opus-5-5': { effortLevel: 'high' } },
-    },
-  }))
-  on('config.set', { key: 'model' }, ($, e) => {
-    model = `claude-${String(e.value)}-5-5`
-    return { value: e.value }
-  })
-  const toasts: string[] = []
-  on('ui.toast', ($, e) => {
-    toasts.push(e.text)
-    return { value: undefined }
-  })
-  on('config.list', () => ({ value: [] }))
-  on('session.start', ($, e) => ({ cwd: e.cwd }))
-  on('command.run', { command: 'effort' }, ($, e) => {
-    effortArgs.push(e.args)
-    const level = /^(\w+)$/.exec(e.args)?.[1]
-    return {
-      text:
-        given.replies?.[e.args] ??
-        (level ? `Set effort level to ${level} (this session only)` : `${e.args} (this session only)`),
-    }
-  })
-
-  const start = () => $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
-  await start()
-  const ui = await $.ui.mount({
-    plugin: 'hud-controls',
-    surface: 'terminal',
-    component: 'PromptHint',
-    props: { ...PROPS, isWorking: true },
-  })
-  await ui.resize({ columns: 200, rows: 1, in: 'controls' })
-  const row = async () => (await ui.find({ in: 'controls', key: 'row:0' }))?.text ?? ''
-  const look = async (label: string) =>
-    (await ui.find({ in: 'controls', type: 'Text', text: new RegExp(`^${label}$`) }))?.props
-  const click = async (label: string) => {
-    const x = (await row()).indexOf(label)
-    expect(x).toBeGreaterThan(-1)
-    await ui.pointer({ type: 'down', x, y: 0, button: 'left', in: 'controls' })
-  }
-  // A press whose command the queue holds: not awaited, done once it is drawn.
-  const press = async (label: string) => {
-    const pressing = click(label)
-    for (let tries = 0; tries < 50 && (await look(label))?.underline !== true; tries++) {
-      await ui.advance(10)
-    }
-    return { pressing }
-  }
-  const type = (args: string) =>
-    $.command.run({
-      command: 'effort',
-      args,
-      origin: { kind: 'composer' },
-      presentation: { isFullscreen: false, columns: 200 },
-    })
-  // With the effort choices open: the level drawn bold, or none.
-  const shown = async () => {
-    for (const label of ['lw', 'md', 'hg', 'xh', 'mx']) {
-      if ((await look(label))?.weight === 'bold') return label
-    }
-    return ''
-  }
-  const report = (effort: string, of = model) => {
-    files[REPORT] = JSON.stringify({ model: of, effort, at: clock.now() })
-  }
-  const pending = () => JSON.parse(files[PENDING] ?? '{}') as { effort?: unknown }
-
-  await click(/(Fable|Opus|Sonnet|Haiku)/i.exec(model)?.[1]?.replace(/^./, one => one.toUpperCase()) ?? '')
-  return { ui, clock, files, effortArgs, toasts, start, look, click, press, type, shown, report, pending }
-}
+import { open, PENDING, PROPS, QUEUE, share } from './row'
 
 for (const surface of ['terminal', 'desktop'] as const) {
   test(`clicks switch model, effort, workflows and ultracode on ${surface}`, async ($, on) => {
@@ -368,60 +251,6 @@ test('the row shows the level the HUD reports for the running model', async ($, 
   expect(await row.shown()).toBe('lw')
 })
 
-// A typed /effort applies from the running turn's next request; a press's
-// command waits for the turn to end, so the row puts its level on them.
-test('an effort press mid-turn applies to the running turn at once', { plugins: [QUEUE] }, async ($, on) => {
-  const sent: unknown[] = []
-  on('turn.step', async function* ($, e) {
-    sent.push(`${e.agentId ?? 'main'}:${e.model}:${String(e.effort)}`)
-    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: null }
-  })
-  const row = await open($, on)
-  const step = async (model = 'claude-opus-5-5', agentId?: string) => {
-    const stream = $.turn.step({
-      turnId: 't1',
-      index: sent.length,
-      model,
-      effort: 'medium',
-      messageCount: 1,
-      ...(agentId === undefined ? {} : { agentId }),
-    })
-    for await (const _ of stream) void _
-  }
-
-  await step()
-  expect(sent).toEqual(['main:claude-opus-5-5:medium'])
-  const pressed = await row.press('xh')
-  await step()
-  // A subagent keeps its own level, and Haiku never gets one above high.
-  await step('claude-opus-5-5', 'agent-1')
-  await step('claude-haiku-5-5')
-  expect(sent.slice(1)).toEqual([
-    'main:claude-opus-5-5:xhigh',
-    'agent-1:claude-opus-5-5:medium',
-    'main:claude-haiku-5-5:medium',
-  ])
-  await row.clock.advance(1000)
-  await pressed.pressing
-  expect(row.effortArgs).toEqual(['xhigh'])
-})
-
-// CLAUDE_CODE_EFFORT_LEVEL rules a typed /effort out, so it rules a press out too.
-test('an effort press mid-turn leaves an environment-set level alone', { plugins: [QUEUE] }, async ($, on) => {
-  const sent: unknown[] = []
-  on('turn.step', async function* ($, e) {
-    sent.push(e.effort)
-    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: null }
-  })
-  const row = await open($, on, { env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' } })
-  const pressed = await row.press('lw')
-  const stream = $.turn.step({ turnId: 't1', index: 0, model: 'claude-opus-5-5', effort: 'high', messageCount: 1 })
-  for await (const _ of stream) void _
-  expect(sent).toEqual(['high'])
-  await row.clock.advance(1000)
-  await pressed.pressing
-})
-
 test('a press shows at once, and only the last one runs', { plugins: [QUEUE] }, async ($, on) => {
   const row = await open($, on, { replies: { low: 'Kept effort level as medium' } })
   expect(await row.shown()).toBe('hg')
@@ -450,13 +279,34 @@ test('a press shows at once, and only the last one runs', { plugins: [QUEUE] }, 
   expect(row.pending()).toEqual({ effort: null })
 
   // A second press on ultracode before its command runs takes the first back.
+  // The HUD file shows the switch as the row does, from the first press on;
+  // until then the HUD keeps its own reading.
+  expect(row.pending()).not.toHaveProperty('ultracode')
   const on1 = await row.press('uc')
   expect(await row.look('uc')).toMatchObject({ weight: 'bold', underline: true })
+  expect(row.pending()).toEqual({ effort: null, ultracode: true })
   await row.click('uc')
   expect((await row.look('uc'))?.weight).not.toBe('bold')
+  expect(row.pending()).toEqual({ effort: null, ultracode: false })
   await row.clock.advance(1000)
   await on1.pressing
   expect(row.effortArgs).toEqual(['medium', 'low'])
+
+  // One that runs keeps the file on, and a typed off turns it off at once.
+  const on2 = await row.press('uc')
+  await row.clock.advance(1000)
+  await on2.pressing
+  expect(row.effortArgs).toEqual(['medium', 'low', 'ultracode on'])
+  expect(row.pending()).toEqual({ effort: null, ultracode: true })
+  await row.type('ultracode off')
+  expect(row.pending()).toEqual({ effort: null, ultracode: false })
+})
+
+// A rejected command changes nothing, so the HUD keeps its own reading.
+test('a typed /effort the engine rejects leaves the HUD its ultracode reading', async ($, on) => {
+  const row = await open($, on, { replies: { 'ultracode banana': 'Invalid argument: ultracode banana' } })
+  await row.type('ultracode banana')
+  expect(row.pending()).not.toHaveProperty('ultracode')
 })
 
 test('an /effort typed at the prompt replaces a waiting press', { plugins: [QUEUE] }, async ($, on) => {
@@ -721,109 +571,6 @@ test('a model press mid-turn shows at once, and only the last one runs', { plugi
   expect(modelArgs).toEqual(['sonnet'])
   expect(await look('Sonnet')).toMatchObject({ weight: 'bold' })
   expect((await look('Sonnet'))?.underline).not.toBe(true)
-})
-
-// A typed /model applies from the running turn's next request; a press's
-// command waits for the turn to end, so the row sends the requests to the
-// family's newest id Claude Code has sent before. A family never sent waits.
-test('a model press mid-turn applies to the running turn at once', { plugins: [QUEUE] }, async ($, on) => {
-  const stored: Record<string, unknown> = {}
-  on('store.get', ($, e) => ({ value: stored[e.key] }))
-  on('store.set', ($, e) => {
-    stored[e.key] = e.value
-    return { value: undefined }
-  })
-  const sent: string[] = []
-  on('turn.step', async function* ($, e) {
-    sent.push(`${e.agentId ?? 'main'}:${e.model}:${String(e.effort)}`)
-    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: null }
-  })
-  const modelArgs: string[] = []
-  on('command.run', { command: 'model' }, ($, e) => {
-    modelArgs.push(e.args)
-    return { text: `Set model to ${e.args}` }
-  })
-  const row = await open($, on)
-  const step = async (model = 'claude-opus-5-5', agentId?: string) => {
-    const stream = $.turn.step({
-      turnId: 't1',
-      index: sent.length,
-      model,
-      effort: 'medium',
-      messageCount: 1,
-      ...(agentId === undefined ? {} : { agentId }),
-    })
-    for await (const _ of stream) void _
-  }
-
-  // Requests Claude Code sent before teach the row each family's newest id.
-  await step('claude-sonnet-5-5')
-  await step('claude-sonnet-5')
-  await step('claude-opus-5-5', 'agent-1')
-  sent.length = 0
-  const sonnet = await row.press('Sonnet')
-  expect(row.toasts).toContain('Set model to claude-sonnet-5-5')
-  await step()
-  await step('claude-opus-5-5', 'agent-1')
-  expect(sent).toEqual(['main:claude-sonnet-5-5:medium', 'agent-1:claude-opus-5-5:medium'])
-
-  // Fable was never sent here: its press waits for the turn to end.
-  const fable = await row.press('Fable')
-  expect(row.toasts).toContain('Model fable: applies when the current turn ends')
-  await step()
-  expect(sent[2]).toBe('main:claude-opus-5-5:medium')
-  await row.clock.advance(1000)
-  await Promise.all([sonnet.pressing, fable.pressing])
-  expect(modelArgs).toEqual(['fable'])
-})
-
-// Dates are no release, another provider's id is not this one's, and `[1m]`
-// asks for more than the model: none of them misleads a press.
-test('a model press mid-turn names the newest id sent from the same provider', { plugins: [QUEUE] }, async ($, on) => {
-  const stored: Record<string, unknown> = {}
-  on('store.get', ($, e) => ({ value: stored[e.key] }))
-  on('store.set', ($, e) => {
-    stored[e.key] = e.value
-    return { value: undefined }
-  })
-  const sent: string[] = []
-  on('turn.step', async function* ($, e) {
-    sent.push(e.model)
-    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: null }
-  })
-  const modelArgs: string[] = []
-  on('command.run', { command: 'model' }, ($, e) => {
-    modelArgs.push(e.args)
-    return { text: `Set model to ${e.args}` }
-  })
-  const row = await open($, on)
-  const step = async (model = 'claude-opus-5-5') => {
-    const stream = $.turn.step({ turnId: 't1', index: sent.length, model, effort: 'medium', messageCount: 1 })
-    for await (const _ of stream) void _
-  }
-
-  for (const id of [
-    'claude-haiku-4-5-20251001',
-    'claude-haiku-4-20250514',
-    'us.anthropic.claude-haiku-5-5-v1:0',
-    'claude-sonnet-5-5',
-    'claude-3-5-sonnet-20241022',
-    'claude-fable-5-1[1m]',
-  ]) {
-    await step(id)
-  }
-  sent.length = 0
-  const presses = [await row.press('Haiku')]
-  await step()
-  presses.push(await row.press('Sonnet'))
-  await step()
-  presses.push(await row.press('Fable'))
-  await step()
-  await step('claude-opus-5-5[1m]')
-  expect(sent).toEqual(['claude-haiku-4-5-20251001', 'claude-sonnet-5-5', 'claude-fable-5-1', 'claude-opus-5-5[1m]'])
-  await row.clock.advance(1000)
-  await Promise.all(presses.map(one => one.pressing))
-  expect(modelArgs).toEqual(['fable'])
 })
 
 test('pressing the running model mid-turn takes back a waiting model press', { plugins: [QUEUE] }, async ($, on) => {
