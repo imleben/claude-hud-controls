@@ -42,8 +42,7 @@ clicked too.
   it, so the session switches at once to that family's latest release. The
   row names the family only; the statusline shows the exact version.
   - Claude Code's confirmations apply as they do for a typed `/model`.
-  - During a turn, a click shows at once (underlined) and applies when the
-    turn ends; only the last click runs.
+  - For a click during a turn, see **Clicks during a turn** below.
 - A click on a model also opens the effort choices. A click on the running
   model while they are open closes them.
 
@@ -53,13 +52,8 @@ clicked too.
   is bold.
 - A click works like typing `/effort <level>` at the prompt, with the same
   confirmations and the same per-model limits.
-- The level shows as chosen right away, even during a turn:
-  - Claude Code runs a plugin's `/effort` only after the current turn ends,
-    so a click made during a turn waits until then. A toast says so
-    (`Effort high: applies when the current turn ends`).
-  - Meanwhile the level is bold and **underlined** on the row, and the
-    statusline already shows it.
-  - Once the command runs, the underline goes away.
+- The level shows as chosen right away, even during a turn (see **Clicks
+  during a turn** below), and the statusline already shows it.
 - Clicking several levels during one turn runs only the last one. Each new
   click replaces the one before it.
 - An `/effort` you type at the prompt also replaces a waiting click:
@@ -90,8 +84,26 @@ clicked too.
     `Ultracode needs Workflow turned on`.
   - Turning workflows off also shows ultracode as off.
 - A switch is gray while off, and bold in the model's color while on.
-- A `uc` click made during a turn waits like an effort click: it is
-  underlined until it runs. Clicking `uc` again before then cancels it.
+- A `uc` click during a turn works like any other (see below). Clicking `uc`
+  again before its command runs cancels it.
+
+**Clicks during a turn**
+
+- Claude Code holds a plugin's command until the current turn ends, while
+  the same line typed at the prompt runs at once (`/model` and `/effort` are
+  immediate commands). So a click during a turn does both:
+  - it queues its command and shows at once, bold and **underlined**, until
+    the command runs;
+  - it puts the same line in the prompt box (`/effort high`,
+    `/model sonnet`, `/effort ultracode on`). Press Enter to apply it now,
+    exactly as typed; the queued command is then dropped.
+- A toast says so
+  (`Effort high: press Enter to apply now, or it applies when the current turn ends`).
+- Left alone, the line leaves the box once the queued command runs.
+- Text you typed yourself is never replaced or removed, only the exact line
+  a click put there. With your own draft in the box, a click only queues
+  (`Effort high: applies when the current turn ends`).
+- Several clicks during one turn run only the last one.
 
 ### The statusline (`hud/`)
 

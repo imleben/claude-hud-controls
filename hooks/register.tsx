@@ -16,6 +16,8 @@ const pendingEffort = atom({ plugin: 'hud-controls', key: 'pendingEffort' } as c
 const pendingUltracode = atom({ plugin: 'hud-controls', key: 'pendingUltracode' } as const, false)
 // A model press whose /model waits in the queue: the row shows it at once.
 const pendingModel = atom({ plugin: 'hud-controls', key: 'pendingModel' } as const, '')
+// The line a press mid-turn put in the prompt box, until its run or a take-back.
+const offeredLine = atom({ plugin: 'hud-controls', key: 'offeredLine' } as const, '')
 // The id this row's last /model resolved to: pressed again, it stays.
 const pickedId = atom({ plugin: 'hud-controls', key: 'pickedId' } as const, '')
 // When a reply last changed effort: a HUD report must be written after it.
@@ -144,6 +146,35 @@ async function applyEffortReply($: EngineInterface, text?: string) {
   if (level !== undefined) await update($, effort, () => level)
 }
 
+// Mid-turn the engine holds a plugin's command until the turn ends, while the same
+// line typed runs at once (/model and /effort are immediate commands). So a press
+// mid-turn also puts its line in the prompt box: Enter applies it now. A draft of
+// the person's own stays: only the exact line a press put there, unedited, is
+// replaced or taken out. The box has no compare-and-write, so each read is
+// followed at once by its write.
+async function offerLine($: EngineInterface, line: string, what: string) {
+  const offered = await read($, offeredLine)
+  const draft = (await $.prompt.read().catch(() => undefined))?.text
+  const isFree = draft !== undefined && (draft.trim() === '' || draft === offered)
+  const done = isFree ? await $.prompt.fill({ text: line }).catch(() => undefined) : undefined
+  if (done?.isFilled === true) await update($, offeredLine, () => line)
+  $.ui.toast(
+    done?.isFilled === true
+      ? `${what}: press Enter to apply now, or it applies when the current turn ends`
+      : `${what}: applies when the current turn ends`,
+  )
+}
+
+// Once a press's run is done or taken back, its line leaves the box; a `line`
+// given limits that to the line of that run.
+async function withdrawLine($: EngineInterface, line?: string) {
+  const offered = await read($, offeredLine)
+  if (offered === '' || (line !== undefined && offered !== line)) return
+  await update($, offeredLine, () => '')
+  const draft = (await $.prompt.read().catch(() => undefined))?.text
+  if (draft === offered) await $.prompt.fill({ text: '' }).catch(() => undefined)
+}
+
 // /model with the family alias, as typed: it switches the running session to the
 // family's latest release. The /config model row only saves, so it is not used.
 async function pickModel($: EngineInterface, alias: string, isWorking: boolean) {
@@ -151,11 +182,14 @@ async function pickModel($: EngineInterface, alias: string, isWorking: boolean) 
   if ((await read($, pendingModel)) === alias) return
   // Already running what this row picked: a press waiting for another model is taken back.
   if (family(id) === alias && (await read($, pickedId)) === id) {
-    await update($, pendingModel, () => '')
+    if ((await read($, pendingModel)) !== '') {
+      await update($, pendingModel, () => '')
+      await withdrawLine($)
+    }
     return
   }
   await update($, pendingModel, () => alias)
-  if (isWorking) $.ui.toast(`Model ${alias}: applies when the current turn ends`)
+  if (isWorking) await offerLine($, `/model ${alias}`, `Model ${alias}`)
   // The command hook records what it switched to and clears the press.
   await $.command.run({ command: 'model', args: alias }).catch(async (error: unknown) => {
     await clearPendingModel($, alias)
@@ -180,7 +214,7 @@ async function pickEffort($: EngineInterface, level: string, isWorking: boolean)
   if ((await read($, pendingEffort)) === level) return
   await update($, pendingEffort, () => level)
   await sharePending($)
-  if (isWorking) $.ui.toast(`Effort ${level}: applies when the current turn ends`)
+  if (isWorking) await offerLine($, `/effort ${level}`, `Effort ${level}`)
   // The command hook reads the reply and clears what it applied.
   await $.command.run({ command: 'effort', args: level }).catch(async (error: unknown) => {
     await clearPending($, level)
@@ -215,12 +249,13 @@ async function toggleUltracode($: EngineInterface, isWorking: boolean) {
   // A second press before the first one's command runs takes it back.
   if (await read($, pendingUltracode)) {
     await update($, pendingUltracode, () => false)
+    await withdrawLine($)
     return
   }
   const isOn = !(await read($, ultracode))
   const args = `ultracode ${isOn ? 'on' : 'off'}`
   await update($, pendingUltracode, () => true)
-  if (isWorking) $.ui.toast(`Ultracode ${isOn ? 'on' : 'off'}: applies when the current turn ends`)
+  if (isWorking) await offerLine($, `/effort ${args}`, `Ultracode ${isOn ? 'on' : 'off'}`)
   await $.command.run({ command: 'effort', args }).catch(async (error: unknown) => {
     await clearPending($, args)
     throw error
@@ -382,6 +417,8 @@ export const register: Register = on => {
 
   on('command.run', { command: 'effort' }, async ($, e, next) => {
     const isRow = e.origin.kind === 'plugin' && e.origin.name === 'hud-controls'
+    // The turn is over: the line the press offered in the prompt box goes.
+    if (isRow) await withdrawLine($, `/effort ${e.args.trim()}`)
     // Answered here, a replaced press runs nothing.
     if (isRow && !(await isWanted($, e.args))) return {}
     // An /effort typed at the prompt replaces the press of its kind still waiting.
@@ -426,6 +463,8 @@ export const register: Register = on => {
 
   on('command.run', { command: 'model' }, async ($, e, next) => {
     const isRow = e.origin.kind === 'plugin' && e.origin.name === 'hud-controls'
+    // The turn is over: the line the press offered in the prompt box goes.
+    if (isRow) await withdrawLine($, `/model ${e.args.trim()}`)
     // A later press replaced this one while it waited: it runs nothing.
     if (isRow && (await read($, pendingModel)) !== e.args.trim()) return {}
     // A /model typed at the prompt replaces a waiting press.
