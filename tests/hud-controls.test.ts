@@ -7,10 +7,10 @@ const REPORT = '/home/me/.claude/hud-controls/session-1.json'
 const PENDING = '/home/me/.claude/hud-controls/session-1.pending.json'
 
 // The files the row shares with the HUD statusline, in memory; a missing one reads empty.
-function share(on: On, isFull = false) {
+function share(on: On, isFull = false, env: Record<string, string> = {}) {
   const files: Record<string, string> = {}
   on('session.id', () => ({ value: 'session-1' }))
-  on('env.get', ($, e) => ({ value: e.name === 'HOME' ? '/home/me' : undefined }))
+  on('env.get', ($, e) => ({ value: e.name === 'HOME' ? '/home/me' : env[e.name] }))
   on('fs.read', ($, e) => ({ value: files[e.path] ?? '' }))
   on('fs.write', ($, e) => {
     if (isFull) throw new Error('ENOSPC: no space left on device')
@@ -36,12 +36,12 @@ const QUEUE: Plugin = {
 async function open(
   $: Engine,
   on: On,
-  given: { model?: string; replies?: Record<string, string>; isFull?: boolean } = {},
+  given: { model?: string; replies?: Record<string, string>; isFull?: boolean; env?: Record<string, string> } = {},
 ) {
   let model = given.model ?? 'claude-opus-5-5'
   const effortArgs: string[] = []
   const clock = mock.clock(on, { now: 1_000_000 })
-  const files = share(on, given.isFull)
+  const files = share(on, given.isFull, given.env)
   on('session.model', () => ({ value: model }))
   // The top-level effortLevel reaches only older models, so it is never shown.
   on('settings.read', () => ({
@@ -316,7 +316,7 @@ test('an effort press marks what is queued and trusts only the reply', async ($,
   await ui.redraw({ ...PROPS, isWorking: true })
   const pressing = click('lw')
   while (finish === undefined) await ui.advance(10)
-  expect(toasts).toContain('Effort low: applies when the current turn ends')
+  expect(toasts).toContain('Set effort level to low')
   expect(JSON.parse(files[PENDING] ?? '{}')).toEqual({ effort: 'low' })
   expect(await look('lw')).toMatchObject({ weight: 'bold', underline: true })
   expect((await look('hg'))?.weight).not.toBe('bold')
@@ -362,6 +362,60 @@ test('the row shows the level the HUD reports for the running model', async ($, 
   // A reload starts the module again mid-session; the level stays.
   await row.start()
   expect(await row.shown()).toBe('lw')
+})
+
+// A typed /effort applies from the running turn's next request; a press's
+// command waits for the turn to end, so the row puts its level on them.
+test('an effort press mid-turn applies to the running turn at once', { plugins: [QUEUE] }, async ($, on) => {
+  const sent: unknown[] = []
+  on('turn.step', async function* ($, e) {
+    sent.push(`${e.agentId ?? 'main'}:${e.model}:${String(e.effort)}`)
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: null }
+  })
+  const row = await open($, on)
+  const step = async (model = 'claude-opus-5-5', agentId?: string) => {
+    const stream = $.turn.step({
+      turnId: 't1',
+      index: sent.length,
+      model,
+      effort: 'medium',
+      messageCount: 1,
+      ...(agentId === undefined ? {} : { agentId }),
+    })
+    for await (const _ of stream) void _
+  }
+
+  await step()
+  expect(sent).toEqual(['main:claude-opus-5-5:medium'])
+  const pressed = await row.press('xh')
+  await step()
+  // A subagent keeps its own level, and Haiku never gets one above high.
+  await step('claude-opus-5-5', 'agent-1')
+  await step('claude-haiku-5-5')
+  expect(sent.slice(1)).toEqual([
+    'main:claude-opus-5-5:xhigh',
+    'agent-1:claude-opus-5-5:medium',
+    'main:claude-haiku-5-5:medium',
+  ])
+  await row.clock.advance(1000)
+  await pressed.pressing
+  expect(row.effortArgs).toEqual(['xhigh'])
+})
+
+// CLAUDE_CODE_EFFORT_LEVEL rules a typed /effort out, so it rules a press out too.
+test('an effort press mid-turn leaves an environment-set level alone', { plugins: [QUEUE] }, async ($, on) => {
+  const sent: unknown[] = []
+  on('turn.step', async function* ($, e) {
+    sent.push(e.effort)
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: null }
+  })
+  const row = await open($, on, { env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' } })
+  const pressed = await row.press('lw')
+  const stream = $.turn.step({ turnId: 't1', index: 0, model: 'claude-opus-5-5', effort: 'high', messageCount: 1 })
+  for await (const _ of stream) void _
+  expect(sent).toEqual(['high'])
+  await row.clock.advance(1000)
+  await pressed.pressing
 })
 
 test('a press shows at once, and only the last one runs', { plugins: [QUEUE] }, async ($, on) => {
@@ -712,124 +766,4 @@ test('pressing the running model mid-turn takes back a waiting model press', { p
   await fable
   expect(modelArgs).toEqual(['opus'])
   expect(model).toBe('claude-opus-5-5')
-})
-
-// Mid-turn a plugin's command waits for the turn, while the same line typed runs
-// at once: a press also offers its line in the prompt box.
-test('a press mid-turn offers its line in the prompt box; Enter applies it now', { plugins: [QUEUE] }, async ($, on) => {
-  let box = ''
-  const toasts: string[] = []
-  const ultracodeArgs: string[] = []
-  const clock = mock.clock(on, { now: 1_000_000 })
-  share(on)
-  on('session.model', () => ({ value: 'claude-opus-5-5' }))
-  on('settings.read', () => ({ value: { model: 'opus' } }))
-  on('prompt.read', () => ({ value: { text: box, cursor: box.length } }))
-  on('prompt.fill', ($, e) => {
-    box = e.text
-    return { isFilled: true }
-  })
-  on('ui.toast', ($, e) => {
-    toasts.push(e.text)
-    return { value: undefined }
-  })
-  on('config.list', () => ({ value: [] }))
-  on('session.start', ($, e) => ({ cwd: e.cwd }))
-  on('command.run', { command: 'effort' }, ($, e) => {
-    ultracodeArgs.push(`${e.origin.kind}:${e.args}`)
-    return {
-      text:
-        e.args === 'ultracode on'
-          ? 'Ultracode on (this session only): x. Effort stays medium.'
-          : 'Ultracode off. Effort stays medium.',
-    }
-  })
-  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
-  const ui = await $.ui.mount({
-    plugin: 'hud-controls',
-    surface: 'terminal',
-    component: 'PromptHint',
-    props: { ...PROPS, isWorking: true },
-  })
-  await ui.resize({ columns: 200, rows: 1, in: 'controls' })
-  const row = async () => (await ui.find({ in: 'controls', key: 'row:0' }))?.text ?? ''
-  const look = async (label: string) =>
-    (await ui.find({ in: 'controls', type: 'Text', text: new RegExp(`^${label}$`) }))?.props
-  const click = async (label: string) =>
-    ui.pointer({ type: 'down', x: (await row()).indexOf(label), y: 0, button: 'left', in: 'controls' })
-  const press = async (label: string) => {
-    const before = toasts.length
-    const pressing = click(label)
-    for (let tries = 0; tries < 50 && toasts.length === before; tries++) await ui.advance(10)
-    return pressing
-  }
-
-  // The press shows at once and offers its line; Enter runs it as typed.
-  const first = await press('uc')
-  expect(await look('uc')).toMatchObject({ weight: 'bold', underline: true })
-  expect(box).toBe('/effort ultracode on')
-  expect(toasts.at(-1)).toBe('Ultracode on: press Enter to apply now, or it applies when the current turn ends')
-  box = ''
-  await $.command.run({
-    command: 'effort',
-    args: 'ultracode on',
-    origin: { kind: 'composer' },
-    presentation: { isFullscreen: false, columns: 200 },
-  })
-  expect(await look('uc')).toMatchObject({ weight: 'bold' })
-  expect((await look('uc'))?.underline).not.toBe(true)
-  // The queued press it replaced runs nothing when the turn ends.
-  await clock.advance(1000)
-  await first
-  expect(ultracodeArgs).toEqual(['composer:ultracode on'])
-
-  // Left in the box, the line goes once the queued run applies it.
-  const second = await press('uc')
-  expect(box).toBe('/effort ultracode off')
-  await clock.advance(1000)
-  await second
-  expect(ultracodeArgs).toEqual(['composer:ultracode on', 'plugin:ultracode off'])
-  expect(box).toBe('')
-
-  // A draft of the person's own is never replaced.
-  box = 'half a question'
-  const third = await press('uc')
-  expect(box).toBe('half a question')
-  expect(toasts.at(-1)).toBe('Ultracode on: applies when the current turn ends')
-  // Taking the press back leaves the draft too.
-  await click('uc')
-  expect(box).toBe('half a question')
-  await clock.advance(1000)
-  await third
-  expect(ultracodeArgs).toEqual(['composer:ultracode on', 'plugin:ultracode off'])
-
-  // A take-back clears a line a press offered.
-  box = ''
-  const fourth = await press('uc')
-  expect(box).toBe('/effort ultracode on')
-  await click('uc')
-  expect(box).toBe('')
-  await clock.advance(1000)
-  await fourth
-  expect(ultracodeArgs).toEqual(['composer:ultracode on', 'plugin:ultracode off'])
-
-  // A command the person drafted is theirs, even one a press could have offered.
-  box = '/effort auto'
-  const fifth = await press('uc')
-  expect(box).toBe('/effort auto')
-  await click('uc')
-  expect(box).toBe('/effort auto')
-  await clock.advance(1000)
-  await fifth
-
-  // An offered line the person edited stays through a take-back.
-  box = ''
-  const sixth = await press('uc')
-  expect(box).toBe('/effort ultracode on')
-  box = '/effort ultracode off'
-  await click('uc')
-  expect(box).toBe('/effort ultracode off')
-  await clock.advance(1000)
-  await sixth
-  expect(ultracodeArgs).toEqual(['composer:ultracode on', 'plugin:ultracode off'])
 })
