@@ -159,3 +159,92 @@ test('a model press mid-turn names the newest id sent from the same provider', {
   await Promise.all(presses.map(one => one.pressing))
   expect(modelArgs).toEqual(['fable'])
 })
+
+// A uc press has no request to apply to: its line waits in the prompt box, and
+// the row asks for Enter, which runs it at once as typed.
+test('a uc press mid-turn offers its line in the prompt box and asks for Enter', { plugins: [QUEUE] }, async ($, on) => {
+  const row = await open($, on, { replies: { 'ultracode on': 'Ultracode on (this session only): x. Effort stays high.' } })
+  const first = await row.press('uc')
+  expect(row.prompt.box).toBe('/effort ultracode on')
+  expect(await row.text()).toContain('uc ⏎ press Enter')
+  expect(row.toasts.at(-1)).toBe('Ultracode on: press Enter to apply now, or it applies when the current turn ends')
+  // Enter: the composer empties the box and runs the line at once.
+  row.prompt.box = ''
+  await row.type('ultracode on')
+  expect(await row.text()).not.toContain('Enter')
+  expect(await row.look('uc')).toMatchObject({ weight: 'bold' })
+  expect((await row.look('uc'))?.underline).not.toBe(true)
+  // The queued press it replaced runs nothing when the turn ends.
+  await row.clock.advance(1000)
+  await first.pressing
+  expect(row.effortArgs).toEqual(['ultracode on'])
+
+  // Left in the box, the line goes once the queued run applies it.
+  const second = await row.press('uc')
+  expect(row.prompt.box).toBe('/effort ultracode off')
+  await row.clock.advance(1000)
+  await second.pressing
+  expect(row.effortArgs).toEqual(['ultracode on', 'ultracode off'])
+  expect(row.prompt.box).toBe('')
+  expect(await row.text()).not.toContain('Enter')
+
+  // A take-back clears it; a draft of the person's own is never replaced.
+  const third = await row.press('uc')
+  await row.click('uc')
+  expect(row.prompt.box).toBe('')
+  expect(await row.text()).not.toContain('Enter')
+  await row.clock.advance(1000)
+  await third.pressing
+  row.prompt.box = 'half a question'
+  const fourth = await row.press('uc')
+  expect(row.prompt.box).toBe('half a question')
+  expect(row.toasts.at(-1)).toBe('Ultracode on: applies when the current turn ends')
+  expect(await row.text()).not.toContain('Enter')
+  await row.click('uc')
+  expect(row.prompt.box).toBe('half a question')
+  await row.clock.advance(1000)
+  await fourth.pressing
+  expect(row.effortArgs).toEqual(['ultracode on', 'ultracode off'])
+})
+
+// The box has no compare-and-write: what the person does while the row reads it wins.
+test('a uc press mid-turn yields the prompt box to what the person does meanwhile', { plugins: [QUEUE] }, async ($, on) => {
+  const row = await open($, on)
+  let release = () => {}
+  const held = () => (row.prompt.hold = new Promise<void>(resolve => (release = resolve)))
+
+  // Taken back while its offer still reads the box: no line stays behind.
+  held()
+  const first = await row.press('uc')
+  await row.click('uc')
+  release()
+  row.prompt.hold = undefined
+  await row.ui.advance(10)
+  expect(row.prompt.box).toBe('')
+  expect(await row.text()).not.toContain('Enter')
+  await row.clock.advance(1000)
+  await first.pressing
+
+  // A draft typed between the offer's read and its write stays as typed.
+  row.prompt.holdFill = new Promise<void>(resolve => (release = resolve))
+  const second = await row.press('uc')
+  row.prompt.box = 'half a question'
+  release()
+  row.prompt.holdFill = undefined
+  await row.ui.advance(10)
+  expect(row.prompt.box).toBe('half a question')
+  expect(await row.text()).not.toContain('Enter')
+  await row.clock.advance(1000)
+  await second.pressing
+
+  // An offered line the person clears or edits no longer asks for Enter.
+  row.prompt.box = ''
+  const third = await row.press('uc')
+  expect(await row.text()).toContain('press Enter')
+  row.prompt.box = 'a question instead'
+  await row.ui.advance(1000)
+  expect(await row.text()).not.toContain('Enter')
+  await row.clock.advance(1000)
+  await third.pressing
+  expect(row.prompt.box).toBe('a question instead')
+})

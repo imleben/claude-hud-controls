@@ -13,6 +13,7 @@ declare module 'claude-code' {
       pendingUltracode: boolean
       ultracodeKnown: boolean
       pendingModel: string
+      offeredLine: string
       pickedId: HudModelId
       changedAt: number
     }

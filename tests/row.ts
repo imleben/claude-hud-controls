@@ -55,6 +55,18 @@ export async function open(
     model = `claude-${String(e.value)}-5-5`
     return { value: e.value }
   })
+  // The prompt box: what the row offers in it, and what the person leaves there.
+  // `hold` keeps a read waiting, `holdFill` a write: what the person does meanwhile.
+  const prompt: { box: string; hold?: Promise<void>; holdFill?: Promise<void> } = { box: '' }
+  on('prompt.read', async () => {
+    await prompt.hold
+    return { value: { text: prompt.box, cursor: prompt.box.length } }
+  })
+  on('prompt.fill', async ($, e) => {
+    await prompt.holdFill
+    prompt.box = e.mode === 'append' ? prompt.box + e.text : e.text
+    return { isFilled: true, text: prompt.box, cursor: prompt.box.length }
+  })
   const toasts: string[] = []
   on('ui.toast', ($, e) => {
     toasts.push(e.text)
@@ -117,5 +129,5 @@ export async function open(
   const pending = () => JSON.parse(files[PENDING] ?? '{}') as { effort?: unknown }
 
   await click(/(Fable|Opus|Sonnet|Haiku)/i.exec(model)?.[1]?.replace(/^./, one => one.toUpperCase()) ?? '')
-  return { ui, clock, files, effortArgs, toasts, start, look, click, press, type, shown, report, pending }
+  return { ui, clock, files, effortArgs, toasts, prompt, start, look, click, press, type, shown, report, pending, text: row }
 }

@@ -101,13 +101,16 @@ clicked too.
   - Turning workflows off also shows ultracode as off.
 - A switch is gray while off, and bold in the model's color while on.
 - A `uc` click during a turn shows at once, underlined, on the row and on the
-  statusline, and runs when the turn ends. Clicking `uc` again before then
-  cancels it.
-  - Unlike effort and model, ultracode can't apply to the running turn:
-    Claude Code holds a plugin's command until the turn ends and runs a
+  statusline. Clicking `uc` again before it runs cancels it.
+  - Claude Code holds a plugin's command until the turn ends and runs a
     command mid-turn only when you type it, and a request has no ultracode
-    field the row could set. A typed `/effort ultracode` also reaches the
-    model only from your next prompt.
+    field the row could set. So the click also puts `/effort ultracode on`
+    (or `off`) in the prompt box, and the row shows **`⏎ press Enter`**.
+    Press Enter to apply it at once, as if you had typed it; otherwise it
+    applies when the turn ends and the line leaves the prompt box.
+  - The row never replaces text you are typing: with a draft in the prompt
+    box, the click only waits for the turn to end. If you clear or edit the
+    line, the Enter hint goes away.
 
 ### The statusline (`hud/`)
 

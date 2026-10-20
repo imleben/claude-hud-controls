@@ -16,6 +16,8 @@ const pendingEffort = atom({ plugin: 'hud-controls', key: 'pendingEffort' } as c
 const pendingUltracode = atom({ plugin: 'hud-controls', key: 'pendingUltracode' } as const, false)
 // Whether the row has learned the ultracode switch this session (it starts unknown).
 const ultracodeKnown = atom({ plugin: 'hud-controls', key: 'ultracodeKnown' } as const, false)
+// The line a uc press mid-turn put in the prompt box, until it runs or is taken back.
+const offeredLine = atom({ plugin: 'hud-controls', key: 'offeredLine' } as const, '')
 // A model press whose /model waits in the queue: the row shows it at once.
 const pendingModel = atom({ plugin: 'hud-controls', key: 'pendingModel' } as const, '')
 // The id this row's last /model resolved to: pressed again, it stays.
@@ -45,6 +47,8 @@ const LEVELS: readonly string[] = EFFORTS.map(one => one.level)
 const PLAIN = '#e6e6e6'
 // A switch that is off.
 const OFF = '#7a7a7a'
+// Beside uc while its line waits in the prompt box.
+const ENTER = '⏎ press Enter'
 // A statusline run spawned before a change can still report after it.
 const REPORT_LAG_MS = 1000
 
@@ -288,18 +292,67 @@ async function toggleWorkflows($: EngineInterface) {
   if (done.value !== true) await setUltracode($, false)
 }
 
+// Mid-turn the engine holds a plugin's command until the turn ends, and a request
+// has no ultracode to set; the same line typed runs at once. So a uc press
+// mid-turn also puts its line in the prompt box, and the row asks for Enter. A
+// draft of the person's own stays: only the exact line a press put there,
+// unedited, is replaced or taken out. The box has no compare-and-write: an empty
+// box is appended to, so a draft typed since the read survives, and the line is
+// taken off it again.
+async function offerLine($: EngineInterface, line: string, what: string) {
+  const offered = await read($, offeredLine)
+  const draft = (await $.prompt.read().catch(() => undefined))?.text
+  const isOurs = offered !== '' && draft === offered
+  const isFree = isOurs || draft?.trim() === ''
+  const mode = isOurs ? 'replace' : 'append'
+  const done = isFree ? await $.prompt.fill({ text: line, mode }).catch(() => undefined) : undefined
+  const isOffered = done?.isFilled === true && done.text === line
+  if (isOffered) await update($, offeredLine, () => line)
+  else if (done?.isFilled === true && done.text.endsWith(line)) {
+    await $.prompt.fill({ text: done.text.slice(0, -line.length) }).catch(() => undefined)
+  }
+  $.ui.toast(
+    isOffered
+      ? `${what}: press Enter to apply now, or it applies when the current turn ends`
+      : `${what}: applies when the current turn ends`,
+  )
+}
+
+// Once a press runs or is taken back, its line leaves the box.
+async function withdrawLine($: EngineInterface) {
+  const offered = await read($, offeredLine)
+  if (offered === '') return
+  await update($, offeredLine, () => '')
+  const draft = (await $.prompt.read().catch(() => undefined))?.text
+  if (draft === offered) await $.prompt.fill({ text: '' }).catch(() => undefined)
+}
+
+// An offered line the person cleared or edited no longer waits for Enter.
+async function syncOffer($: EngineInterface) {
+  const offered = await read($, offeredLine)
+  if (offered === '') return
+  const draft = (await $.prompt.read().catch(() => undefined))?.text
+  if (draft !== undefined && draft !== offered) await update($, offeredLine, () => '')
+}
+
 async function toggleUltracode($: EngineInterface, isWorking: boolean) {
   // A second press before the first one's command runs takes it back.
   if (await read($, pendingUltracode)) {
     await setPendingUltracode($, false)
+    await withdrawLine($)
     return
   }
   const isOn = !(await read($, ultracode))
   const args = `ultracode ${isOn ? 'on' : 'off'}`
   await setPendingUltracode($, true)
-  if (isWorking) $.ui.toast(`Ultracode ${isOn ? 'on' : 'off'}: applies when the current turn ends`)
+  if (isWorking) {
+    await offerLine($, `/effort ${args}`, `Ultracode ${isOn ? 'on' : 'off'}`)
+    // Taken back while the offer read the box: its line goes too.
+    if (!(await read($, pendingUltracode))) await withdrawLine($)
+  }
   await $.command.run({ command: 'effort', args }).catch(async (error: unknown) => {
     await clearPending($, args)
+    await withdrawLine($)
     throw error
   })
 }
@@ -467,6 +520,8 @@ export const register: Register = on => {
 
   on('command.run', { command: 'effort' }, async ($, e, next) => {
     const isRow = e.origin.kind === 'plugin' && e.origin.name === 'hud-controls'
+    // The turn is over, or the person ran it: a line a press offered goes.
+    if (/^ultracode\b/i.test(e.args.trim())) await withdrawLine($)
     // Answered here, a replaced press runs nothing.
     if (isRow && !(await isWanted($, e.args))) return {}
     // An /effort typed at the prompt replaces the press of its kind still waiting.
@@ -534,7 +589,10 @@ export const register: Register = on => {
       sync?: unknown
     }
     // No report yet, or one half written, leaves the row as it is.
-    if (e.component === 'PromptHint' && sync === true) await syncReport($).catch(() => undefined)
+    if (e.component === 'PromptHint' && sync === true) {
+      await syncReport($).catch(() => undefined)
+      await syncOffer($)
+    }
     const action =
       e.component === 'PromptHint' && typeof press === 'string'
         ? actionFor($, press, isWorking === true)
@@ -559,6 +617,7 @@ export const register: Register = on => {
     const isUltracodeOn = (await read($, ultracode)) !== isUltracodeQueued
     const isEffortOpen = await read($, effortOpen)
     const queuedModel = await read($, pendingModel)
+    const isOffered = (await read($, offeredLine)) !== ''
     const current = MODELS.find(one => one.alias === (queuedModel || family(id)))
     // Effort and the switches take the running model's color.
     const accent = current?.color ?? PLAIN
@@ -608,6 +667,8 @@ export const register: Register = on => {
         : [bar, run('workflows', 'wf', isWorkflowOn, accent, OFF)]),
       bar,
       run('ultracode', 'uc', isUltracodeOn, accent, OFF, isUltracodeQueued),
+      // Its line waits in the prompt box: Enter applies it now.
+      ...(isOffered ? [{ key: null, label: ENTER, color: accent, isBold: true, isPending: false }] : []),
     ]
 
     // The engine's hint keeps its row beside the mode label; the controls go last.
