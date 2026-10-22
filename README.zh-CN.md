@@ -8,9 +8,9 @@
 ![The statusline above, the controls row at the bottom](docs/screenshot-model-effort.png)
 
 上方几行是状态栏（`hud/`）：依次显示模型和思考强度（`Opus 5.5
-◔ med`）、项目和 git 分支，以及上下文、5 小时和 7 天用量的剩余额度，
+◑ high`）、项目和 git 分支，以及上下文、5 小时和 7 天用量的剩余额度，
 颜色则反映已用量。最下方是控件行（mod），位于 Claude Code 的模式标签旁。
-图中正在运行 Opus，思考强度选项已展开并选中 `md`，工作流（`wf`）已开启，
+图中正在运行 Opus，思考强度选项已展开并选中 `hg`，工作流（`wf`）已开启，
 ultracode（`uc`）已关闭。
 
 本仓库包含两个部分：
