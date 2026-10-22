@@ -5,7 +5,7 @@ Clickable model, effort, workflow and ultracode switches under the Claude
 Code prompt, and a statusline HUD that agrees with them. When you pick an
 effort level, both show it right away.
 
-![The statusline above, the controls row at the bottom](docs/screenshot-pace.png)
+![The statusline above, the controls row at the bottom](docs/screenshot-model-effort.png)
 
 The top lines are the statusline (`hud/`): the model and effort (`Opus 5.5
 ◔ med`), the project and git branch, then context, 5-hour and 7-day usage as
@@ -38,9 +38,16 @@ clicked too.
 
 - Each family has its own color: Fable violet, Opus orange, Sonnet blue and
   Haiku green. The running model is bold in full color; the others are dimmed.
-- A click runs `/model <alias>` (`opus`, `sonnet`, …), the same as typing
-  it, so the session switches at once to that family's latest release. The
-  row names the family only; the statusline shows the exact version.
+- A click on a model does not switch yet: it opens the effort choices with
+  that model shown bold in its color. The next effort click switches: it runs
+  `/model <alias>` (`opus`, `sonnet`, …), the same as typing it, then
+  `/effort <level>`, so the session moves to that family's latest release at
+  the level picked. To keep the current level, click the level already in
+  bold. The row names the family only; the statusline shows the exact version.
+  - A click on the same model again closes the choices and drops the pick; a
+    `/model` you type drops it too.
+  - A click on the running model while another model's click waits takes that
+    click back at once, with no effort to pick.
   - Claude Code's confirmations apply as they do for a typed `/model`.
   - During a turn, a click applies at once, as a typed `/model` does: the
     turn's next request already goes to the new model.
@@ -52,13 +59,11 @@ clicked too.
     - A family Claude Code has not sent a request to from this provider yet,
       or a request with a suffix such as `[1m]`, waits for the turn to end.
       Subagents keep their own model.
-    - Only the last click runs.
-- A click on a model also opens the effort choices. A click on the running
-  model while they are open closes them.
+    - Only the last click runs, and its level runs after its `/model`.
 
 **Effort: `lw md hg xh mx`** (low, medium, high, xhigh, max)
 
-- These choices are drawn in the running model's color. The level in effect
+- These choices are drawn in the color of the model shown. The level in effect
   is bold.
 - A click works like typing `/effort <level>` at the prompt, with the same
   confirmations and the same per-model limits.

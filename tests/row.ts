@@ -55,6 +55,16 @@ export async function open(
     model = `claude-${String(e.value)}-5-5`
     return { value: e.value }
   })
+  // An effort press runs the /model of a model pressed before it.
+  const modelArgs: string[] = []
+  // Every command the row's presses ran, in order.
+  const ran: string[] = []
+  on('command.run', { command: 'model' }, ($, e) => {
+    modelArgs.push(e.args)
+    ran.push(`model:${e.args}`)
+    model = `claude-${e.args}-5-5`
+    return { text: `Set model to ${e.args}` }
+  })
   // The prompt box: what the row offers in it, and what the person leaves there.
   // `hold` keeps a read waiting, `holdFill` a write: what the person does meanwhile.
   const prompt: { box: string; hold?: Promise<void>; holdFill?: Promise<void> } = { box: '' }
@@ -76,6 +86,7 @@ export async function open(
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('command.run', { command: 'effort' }, ($, e) => {
     effortArgs.push(e.args)
+    ran.push(`effort:${e.args}`)
     const level = /^(\w+)$/.exec(e.args)?.[1]
     return {
       text:
@@ -129,5 +140,5 @@ export async function open(
   const pending = () => JSON.parse(files[PENDING] ?? '{}') as { effort?: unknown }
 
   await click(/(Fable|Opus|Sonnet|Haiku)/i.exec(model)?.[1]?.replace(/^./, one => one.toUpperCase()) ?? '')
-  return { ui, clock, files, effortArgs, toasts, prompt, start, look, click, press, type, shown, report, pending, text: row }
+  return { ui, clock, files, effortArgs, modelArgs, ran, toasts, prompt, start, look, click, press, type, shown, report, pending, text: row }
 }

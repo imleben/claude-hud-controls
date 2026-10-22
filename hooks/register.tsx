@@ -13,6 +13,8 @@ const effortOpen = atom({ plugin: 'hud-controls', key: 'effortOpen' } as const, 
 // A press whose command waits in the engine's queue (it runs once the session is idle).
 // It shows at once, here and on the HUD statusline; only the last press's command runs.
 const pendingEffort = atom({ plugin: 'hud-controls', key: 'pendingEffort' } as const, '')
+// How many queued /effort runs name the waiting level: only the last one runs.
+const effortRuns = atom({ plugin: 'hud-controls', key: 'effortRuns' } as const, 0)
 const pendingUltracode = atom({ plugin: 'hud-controls', key: 'pendingUltracode' } as const, false)
 // Whether the row has learned the ultracode switch this session (it starts unknown).
 const ultracodeKnown = atom({ plugin: 'hud-controls', key: 'ultracodeKnown' } as const, false)
@@ -20,6 +22,8 @@ const ultracodeKnown = atom({ plugin: 'hud-controls', key: 'ultracodeKnown' } as
 const offeredLine = atom({ plugin: 'hud-controls', key: 'offeredLine' } as const, '')
 // A model press whose /model waits in the queue: the row shows it at once.
 const pendingModel = atom({ plugin: 'hud-controls', key: 'pendingModel' } as const, '')
+// A model pressed and not yet run: its /model waits for an effort press.
+const draftModel = atom({ plugin: 'hud-controls', key: 'draftModel' } as const, '')
 // The id this row's last /model resolved to: pressed again, it stays.
 const pickedId = atom({ plugin: 'hud-controls', key: 'pickedId' } as const, '')
 // When a reply last changed effort: a HUD report must be written after it.
@@ -222,15 +226,25 @@ async function applyEffortReply($: EngineInterface, text?: string) {
   if (level !== undefined) await update($, effort, () => level)
 }
 
+// Whether a /model of `alias` would change nothing: it waits already, or the
+// running model is the one this row last picked and no other press waits.
+async function isModelKept($: EngineInterface, alias: string) {
+  const waiting = await read($, pendingModel)
+  if (waiting !== '') return waiting === alias
+  const id = await read($, modelId)
+  return family(id) === alias && (await read($, pickedId)) === id
+}
+
 // /model with the family alias, as typed: it switches the running session to the
 // family's latest release. The /config model row only saves, so it is not used.
+// Its run is handed back started, so an /effort queued after it runs after it.
 async function pickModel($: EngineInterface, alias: string, isWorking: boolean) {
   const id = await read($, modelId)
-  if ((await read($, pendingModel)) === alias) return
+  if ((await read($, pendingModel)) === alias) return { ran: Promise.resolve(), isQueued: false }
   // Already running what this row picked: a press waiting for another model is taken back.
   if (family(id) === alias && (await read($, pickedId)) === id) {
     await update($, pendingModel, () => '')
-    return
+    return { ran: Promise.resolve(), isQueued: false }
   }
   await update($, pendingModel, () => alias)
   if (isWorking) {
@@ -238,27 +252,62 @@ async function pickModel($: EngineInterface, alias: string, isWorking: boolean) 
     $.ui.toast(sent !== undefined ? `Set model to ${sent}` : `Model ${alias}: applies when the current turn ends`)
   }
   // The command hook records what it switched to and clears the press.
-  await $.command.run({ command: 'model', args: alias }).catch(async (error: unknown) => {
+  const ran = $.command.run({ command: 'model', args: alias }).catch(async (error: unknown) => {
     await clearPendingModel($, alias)
     throw error
   })
+  return { ran, isQueued: true }
 }
 
 async function clearPendingModel($: EngineInterface, alias: string) {
   if ((await read($, pendingModel)) === alias) await update($, pendingModel, () => '')
 }
 
-// A model press opens the effort choices; pressing the shown model again closes them.
-async function pressModel($: EngineInterface, alias: string, isWorking: boolean) {
-  const shown = (await read($, pendingModel)) || family(await read($, modelId))
-  await update($, effortOpen, isOpen => !(shown === alias && isOpen))
-  await pickModel($, alias, isWorking)
+// A model press only opens the effort choices for it: the model changes with the
+// effort pressed next. Pressing the shown model again closes them and drops the press.
+// The running model pressed while another waits takes that one back at once: the
+// level stays, so there is no effort to pick.
+async function pressModel($: EngineInterface, alias: string) {
+  const draft = await read($, draftModel)
+  const waiting = await read($, pendingModel)
+  const running = family(await read($, modelId))
+  const shown = draft || waiting || running
+  if (shown === alias && (await read($, effortOpen))) {
+    await update($, effortOpen, () => false)
+    await update($, draftModel, () => '')
+    return
+  }
+  await update($, effortOpen, () => true)
+  if (waiting !== '' && alias === running) {
+    await update($, pendingModel, () => '')
+    await update($, draftModel, () => '')
+    return
+  }
+  const isKept = await isModelKept($, alias)
+  await update($, draftModel, () => (isKept ? '' : alias))
+  const label = MODELS.find(one => one.alias === alias)?.label ?? alias
+  if (!isKept) $.ui.toast(`${label}: pick an effort level to switch`)
 }
 
 // The choices stay open, so the pressed level shows on the row at once.
+// A model pressed before it switches first, then the level is set on it.
 async function pickEffort($: EngineInterface, level: string, isWorking: boolean) {
+  const alias = await read($, draftModel)
+  if (alias !== '') await update($, draftModel, () => '')
+  const { ran, isQueued } =
+    alias !== '' ? await pickModel($, alias, isWorking) : { ran: Promise.resolve(), isQueued: false }
+  const [switched, set] = await Promise.allSettled([ran, setEffort($, level, isWorking, isQueued)])
+  if (switched.status === 'rejected') throw switched.reason
+  if (set.status === 'rejected') throw set.reason
+}
+
+// After a /model just queued, the level is queued again behind it even when it
+// waits already: run before that /model, the new model would not get it.
+async function setEffort($: EngineInterface, level: string, isWorking: boolean, isAfterModel = false) {
+  const waiting = await read($, pendingEffort)
   // The same press already waits in the queue.
-  if ((await read($, pendingEffort)) === level) return
+  if (waiting === level && !isAfterModel) return
+  await update($, effortRuns, runs => (waiting === level ? runs + 1 : 1))
   await update($, pendingEffort, () => level)
   await sharePending($)
   if (isWorking) $.ui.toast(`Set effort level to ${level}`)
@@ -361,7 +410,10 @@ async function toggleUltracode($: EngineInterface, isWorking: boolean) {
 // press or a typed /effort replaced it.
 async function isWanted($: EngineInterface, args: string) {
   if (/^ultracode /.test(args)) return read($, pendingUltracode)
-  return (await read($, pendingEffort)) === args
+  if ((await read($, pendingEffort)) !== args) return false
+  const left = (await read($, effortRuns)) - 1
+  await update($, effortRuns, () => left)
+  return left <= 0
 }
 
 // An /effort the row runs resolves without its output; the engine records that
@@ -452,7 +504,7 @@ async function readCommandRow($: EngineInterface, origin: object, content: reado
 function actionFor($: EngineInterface, key: string, isWorking: boolean) {
   const [kind, value = ''] = key.split(':')
   if (kind === 'model' && MODELS.some(one => one.alias === value)) {
-    return () => pressModel($, value, isWorking)
+    return () => pressModel($, value)
   }
   if (kind === 'effort' && LEVELS.includes(value)) return () => pickEffort($, value, isWorking)
   if (key === 'workflows') return () => toggleWorkflows($)
@@ -568,8 +620,11 @@ export const register: Register = on => {
     const isRow = e.origin.kind === 'plugin' && e.origin.name === 'hud-controls'
     // A later press replaced this one while it waited: it runs nothing.
     if (isRow && (await read($, pendingModel)) !== e.args.trim()) return {}
-    // A /model typed at the prompt replaces a waiting press.
-    if (!isRow) await update($, pendingModel, () => '')
+    // A /model typed at the prompt replaces a waiting press, and one not yet run.
+    if (!isRow) {
+      await update($, pendingModel, () => '')
+      await update($, draftModel, () => '')
+    }
     const done = await next(e)
     await syncModel($)
     if (isRow) {
@@ -617,8 +672,10 @@ export const register: Register = on => {
     const isUltracodeOn = (await read($, ultracode)) !== isUltracodeQueued
     const isEffortOpen = await read($, effortOpen)
     const queuedModel = await read($, pendingModel)
+    // A model pressed shows as chosen while its effort is picked; it is not queued yet.
+    const draft = isEffortOpen ? await read($, draftModel) : ''
     const isOffered = (await read($, offeredLine)) !== ''
-    const current = MODELS.find(one => one.alias === (queuedModel || family(id)))
+    const current = MODELS.find(one => one.alias === (draft || queuedModel || family(id)))
     // Effort and the switches take the running model's color.
     const accent = current?.color ?? PLAIN
 

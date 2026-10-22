@@ -10,9 +10,11 @@ declare module 'claude-code' {
       ultracode: boolean
       effortOpen: boolean
       pendingEffort: string
+      effortRuns: number
       pendingUltracode: boolean
       ultracodeKnown: boolean
       pendingModel: string
+      draftModel: string
       offeredLine: string
       pickedId: HudModelId
       changedAt: number

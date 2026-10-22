@@ -86,30 +86,31 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await look('Opus')).toMatchObject({ color: '#f5a46c', weight: 'bold' })
     expect(JSON.stringify(await look('Opus'))).not.toContain('backgroundColor')
 
-    // A press runs /model with the family alias, which switches to the latest;
-    // pressing the running model opens the effort choices, again closes them.
+    // A model press only opens the effort choices; again, it closes them and runs nothing.
     await click('Opus')
-    expect(modelArgs).toEqual(['opus'])
     expect(await row()).toContain('│ lw md hg xh mx │')
     await click('Opus')
-    expect(modelArgs).toEqual(['opus'])
     expect(await row()).not.toContain('hg')
 
     // A miss (the space between runs) presses nothing.
     await ui.pointer({ type: 'down', x: 5, y: 0, button: 'left', in: 'controls' })
-    expect(modelArgs).toEqual(['opus'])
 
+    // Another model shows as chosen while its effort is picked, and runs nothing yet.
     await click('Sonnet')
-    expect(modelArgs).toEqual(['opus', 'sonnet'])
-    expect(await look('Sonnet')).toMatchObject({ weight: 'bold' })
+    expect(await look('Sonnet')).toMatchObject({ color: '#7cc8f8', weight: 'bold' })
+    expect((await look('Opus'))?.color).not.toBe('#f5a46c')
+    expect(await row()).toContain('│ lw md hg xh mx │')
+    expect(modelArgs).toEqual([])
 
-    // Picking an effort keeps the choices open; effort takes the model's color.
+    // The effort press runs /model with the family alias, which switches to the
+    // latest, then the level; the choices stay open, in the model's color.
     await click('hg')
+    expect(modelArgs).toEqual(['sonnet'])
     expect(effortArgs).toEqual(['high'])
     expect(await look('hg')).toMatchObject({ color: '#7cc8f8', weight: 'bold' })
-    expect((await look('Opus'))?.color).not.toBe('#f5a46c')
     // The shown level can be stale, so pressing it runs the command again.
     await click('hg')
+    expect(modelArgs).toEqual(['sonnet'])
     expect(effortArgs).toEqual(['high', 'high'])
     await click('Sonnet')
     expect(await row()).not.toContain('xh')
@@ -126,7 +127,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
     // A narrow region wraps onto a second row that clicks still reach.
     await ui.resize({ columns: 20, rows: 3, in: 'controls' })
     await click('Haiku', 1)
-    expect(modelArgs).toEqual(['opus', 'sonnet', 'haiku'])
+    expect(modelArgs).toEqual(['sonnet'])
+    expect(await look('Haiku')).toMatchObject({ weight: 'bold' })
   })
 }
 
@@ -224,9 +226,23 @@ test('the row shows the level the HUD reports for the running model', async ($, 
   await row.ui.advance(1000)
   expect(await row.shown()).toBe('mx')
 
+  // A model press alone switches nothing: the running model's report still shows.
+  await row.click('Opus')
+  row.report('xhigh')
+  await row.ui.advance(1000)
+  expect(await row.shown()).toBe('xh')
+  row.report('max')
+  await row.ui.advance(1000)
+  expect(row.modelArgs).toEqual([])
+
   // A switch keeps the level until the HUD reports the new model's: one
   // written for the model before ignored, one for the new model taken at once.
-  await row.click('Opus')
+  await $.command.run({
+    command: 'model',
+    args: 'opus',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: false, columns: 200 },
+  })
   expect(await row.shown()).toBe('mx')
   row.report('xhigh', 'claude-haiku-5-5')
   await row.ui.advance(1000)
@@ -503,6 +519,11 @@ test('a model press runs /model, so an older running model moves to the latest',
     model = { opus: 'claude-opus-5-5', fable: 'claude-fable-5-1' }[e.args] ?? e.args
     return { text: `Set model to ${e.args}` }
   })
+  const effortArgs: string[] = []
+  on('command.run', { command: 'effort' }, ($, e) => {
+    effortArgs.push(e.args)
+    return { text: `Set effort level to ${e.args} (this session only)` }
+  })
   on('ui.toast', () => ({ value: undefined }))
   on('config.list', () => ({ value: [] }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
@@ -516,16 +537,22 @@ test('a model press runs /model, so an older running model moves to the latest',
     ui.pointer({ type: 'down', x: (await row()).indexOf(label), y: 0, button: 'left', in: 'controls' })
 
   await click('Opus')
+  expect(modelArgs).toEqual([])
+  await click('md')
   expect(modelArgs).toEqual(['opus'])
   expect(model).toBe('claude-opus-5-5')
   await click('Fable')
+  await click('hg')
   expect(modelArgs).toEqual(['opus', 'fable'])
+  expect(effortArgs).toEqual(['medium', 'high'])
   expect(await look('Fable')).toMatchObject({ color: '#c3a6ff', weight: 'bold' })
   expect(await look('Opus')).not.toMatchObject({ weight: 'bold' })
   // Pressed again, the model this row just set only toggles the effort choices.
   await click('Fable')
   await click('Fable')
+  await click('lw')
   expect(modelArgs).toEqual(['opus', 'fable'])
+  expect(effortArgs).toEqual(['medium', 'high', 'low'])
   expect(modelSets).toEqual([])
 })
 
@@ -541,6 +568,7 @@ test('a model press mid-turn shows at once, and only the last one runs', { plugi
     model = `claude-${e.args}-5-5`
     return { text: `Set model to ${e.args}` }
   })
+  on('command.run', { command: 'effort' }, ($, e) => ({ text: `Set effort level to ${e.args} (this session only)` }))
   on('ui.toast', () => ({ value: undefined }))
   on('config.list', () => ({ value: [] }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
@@ -555,16 +583,23 @@ test('a model press mid-turn shows at once, and only the last one runs', { plugi
   const row = async () => (await ui.find({ in: 'controls', key: 'row:0' }))?.text ?? ''
   const look = async (label: string) =>
     (await ui.find({ in: 'controls', type: 'Text', text: new RegExp(`^${label}$`) }))?.props
-  const press = async (label: string) => {
-    const pressing = ui.pointer({ type: 'down', x: (await row()).indexOf(label), y: 0, button: 'left', in: 'controls' })
-    for (let tries = 0; tries < 50 && (await look(label))?.underline !== true; tries++) await ui.advance(10)
-    return pressing
-  }
+  const click = async (label: string) =>
+    ui.pointer({ type: 'down', x: (await row()).indexOf(label), y: 0, button: 'left', in: 'controls' })
 
-  const fable = await press('Fable')
+  // A model press alone is shown, not queued; the effort press queues both.
+  await click('Fable')
+  expect(await look('Fable')).toMatchObject({ weight: 'bold' })
+  expect((await look('Fable'))?.underline).not.toBe(true)
+  const fable = click('hg')
+  for (let tries = 0; tries < 50 && (await look('hg'))?.underline !== true; tries++) await ui.advance(10)
   expect(await look('Fable')).toMatchObject({ weight: 'bold', underline: true })
   expect(await look('Opus')).not.toMatchObject({ weight: 'bold' })
-  const sonnet = await press('Sonnet')
+  // The waiting model stays underlined while another is picked.
+  await click('Sonnet')
+  expect(await look('Fable')).toMatchObject({ underline: true })
+  expect(await look('Sonnet')).toMatchObject({ weight: 'bold' })
+  const sonnet = click('md')
+  for (let tries = 0; tries < 50 && (await look('md'))?.underline !== true; tries++) await ui.advance(10)
   expect(await look('Sonnet')).toMatchObject({ weight: 'bold', underline: true })
   await clock.advance(1000)
   await Promise.all([fable, sonnet])
@@ -585,6 +620,7 @@ test('pressing the running model mid-turn takes back a waiting model press', { p
     model = `claude-${e.args}-5-5`
     return { text: `Set model to ${e.args}` }
   })
+  on('command.run', { command: 'effort' }, ($, e) => ({ text: `Set effort level to ${e.args} (this session only)` }))
   on('ui.toast', () => ({ value: undefined }))
   on('config.list', () => ({ value: [] }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
@@ -599,23 +635,29 @@ test('pressing the running model mid-turn takes back a waiting model press', { p
   const row = async () => (await ui.find({ in: 'controls', key: 'row:0' }))?.text ?? ''
   const look = async (label: string) =>
     (await ui.find({ in: 'controls', type: 'Text', text: new RegExp(`^${label}$`) }))?.props
-  const press = async (label: string) => {
-    const pressing = ui.pointer({ type: 'down', x: (await row()).indexOf(label), y: 0, button: 'left', in: 'controls' })
-    for (let tries = 0; tries < 50 && (await look(label))?.underline !== true; tries++) await ui.advance(10)
+  const click = async (label: string) =>
+    ui.pointer({ type: 'down', x: (await row()).indexOf(label), y: 0, button: 'left', in: 'controls' })
+  // A model press, then the effort press that queues it: done once the model is drawn waiting.
+  const choose = async (label: string, level: string) => {
+    await click(label)
+    const pressing = click(level)
+    for (let tries = 0; tries < 50 && (await look(level))?.underline !== true; tries++) await ui.advance(10)
     return pressing
   }
 
   // The row's own /model opus: the running id is now the one it picked.
-  const opus = await press('Opus')
+  const opus = await choose('Opus', 'hg')
   await clock.advance(1000)
   await opus
   expect(modelArgs).toEqual(['opus'])
 
-  const fable = await press('Fable')
+  const fable = await choose('Fable', 'md')
   expect(await look('Fable')).toMatchObject({ weight: 'bold', underline: true })
-  await ui.pointer({ type: 'down', x: (await row()).indexOf('Opus'), y: 0, button: 'left', in: 'controls' })
+  // The running model pressed takes the waiting press back at once, no effort picked.
+  await click('Opus')
   expect(await look('Opus')).toMatchObject({ weight: 'bold' })
   expect((await look('Fable'))?.underline).not.toBe(true)
+  expect(await row()).toContain('│ lw md hg xh mx │')
   await clock.advance(1000)
   await fable
   expect(modelArgs).toEqual(['opus'])
