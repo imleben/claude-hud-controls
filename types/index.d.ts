@@ -18,6 +18,8 @@ declare module 'claude-code' {
       offeredLine: string
       pickedId: HudModelId
       changedAt: number
+      controlsMount: number
+      remountedAt: number[]
     }
   }
 }

@@ -28,6 +28,10 @@ const draftModel = atom({ plugin: 'hud-controls', key: 'draftModel' } as const, 
 const pickedId = atom({ plugin: 'hud-controls', key: 'pickedId' } as const, '')
 // When a reply last changed effort: a HUD report must be written after it.
 const changedAt = atom({ plugin: 'hud-controls', key: 'changedAt' } as const, 0)
+// Bumped when the engine unmounts the row's Client: a new key mounts it again.
+const controlsMount = atom({ plugin: 'hud-controls', key: 'controlsMount' } as const, 0)
+// When the row was last mounted again, newest last.
+const remountedAt = atom({ plugin: 'hud-controls', key: 'remountedAt' } as const, [] as number[])
 
 // Aliases, not ids: the saved model follows each family's latest release.
 const MODELS = [
@@ -55,6 +59,10 @@ const OFF = '#7a7a7a'
 const ENTER = '⏎ press Enter'
 // A statusline run spawned before a change can still report after it.
 const REPORT_LAG_MS = 1000
+// A stalled process (memory pressure, a long idle) overruns a tick that is
+// otherwise instant; a module that keeps failing stays down past this many.
+const REMOUNTS_PER_HOUR = 3
+const HOUR_MS = 60 * 60 * 1000
 
 // Halfway to a dark gray: an option not chosen keeps its hue, dimmer.
 function mute(hex: string) {
@@ -659,6 +667,23 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // The engine leaves an unmounted Client's error in its place until a reload,
+  // and draws the site again once this is heard: a new key mounts the row anew.
+  on('ui.fault', { component: 'PromptHint' }, async ($, e, next) => {
+    if (e.phase === 'load') return next(e)
+    const now = await $.clock.now()
+    // Faults from several surfaces overlap: the cap is judged inside the write.
+    let isRemounting = false
+    await update($, remountedAt, times => {
+      const recent = times.filter(at => now - at < HOUR_MS)
+      isRemounting = recent.length < REMOUNTS_PER_HOUR
+      return isRemounting ? [...recent, now] : recent
+    })
+    if (isRemounting) await update($, controlsMount, n => n + 1)
+
+    return next(e)
+  })
+
   on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
     // Only a Client region draws clicks without the Button's pointer inversion.
     if (e.surface !== 'terminal' && e.surface !== 'desktop') return next(e)
@@ -675,6 +700,7 @@ export const register: Register = on => {
     // A model pressed shows as chosen while its effort is picked; it is not queued yet.
     const draft = isEffortOpen ? await read($, draftModel) : ''
     const isOffered = (await read($, offeredLine)) !== ''
+    const mount = await read($, controlsMount)
     const current = MODELS.find(one => one.alias === (draft || queuedModel || family(id)))
     // Effort and the switches take the running model's color.
     const accent = current?.color ?? PLAIN
@@ -738,7 +764,7 @@ export const register: Register = on => {
         )}
         <Box paddingLeft={1}>
           <Client
-            key="controls"
+            key={mount === 0 ? 'controls' : `controls-${mount}`}
             module="./controls.tsx"
             props={{ segments, isWorking: e.props.isWorking }}
             width="100%"

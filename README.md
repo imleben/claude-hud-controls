@@ -117,6 +117,20 @@ clicked too.
     box, the click only waits for the turn to end. If you clear or edit the
     line, the Enter hint goes away.
 
+**When the row stalls**
+
+- Claude Code gives the row's drawing code 1 second per run. If a run goes
+  past that limit, Claude Code removes the row and shows the error text in
+  its place until the plugin reloads.
+- The row's once-a-second check is normally instant. It can overrun if the
+  whole process stalls, for example under memory pressure or after hours idle.
+- From 0.2.10, the row hears Claude Code's notice of that failure and draws
+  itself again, at most three times an hour. A row whose code keeps failing
+  stays down instead of retrying forever. It does not retry if the plugin's
+  code could not be loaded at all.
+- Claude Code still prints one dim error line in the transcript for each
+  such failure. The row cannot hide that line.
+
 ### The statusline (`hud/`)
 
 This is claude-hud 0.8.0 with these changes:
@@ -243,9 +257,12 @@ The tests run the row against a mocked Claude Code. They cover:
 - refusals, declined confirmations and `auto`;
 - `/effort` typed at the prompt;
 - statusline reports, including a model switch;
+- a row drawing itself again after running past its limit, and several
+  failures arriving at once still staying within three an hour;
 - failed file writes, a new session and a reload.
 
-Built and tested on Claude Code 2.1.302.
+The row was built on Claude Code 2.1.302; the tests and this recovery were
+checked on Claude Code 2.1.311.
 
 ## License
 
